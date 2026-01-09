@@ -47,24 +47,62 @@ function ProxyPage() {
   const { t } = useTranslation();
   const { config, isLoading, saveConfig } = useAppConfig();
 
-  const { data: localIp } = useQuery({
-    queryKey: ['system', 'localIp'],
+  // Query all available local IPs
+  const { data: localIps } = useQuery({
+    queryKey: ['system', 'localIps'],
     queryFn: async () => {
-      // IPC might not be ready on first render, handled by query retry or lazy loading implication
-      // But ipc is imported statically now.
-      return (await ipc.client.system.get_local_ip()) as string;
+      try {
+        const ips = await ipc.client.system.get_local_ips();
+        return ips as { address: string; name: string; isRecommended: boolean }[];
+      } catch (e) {
+        console.error('Failed to get local IPs:', e);
+        return [{ address: '127.0.0.1', name: 'localhost', isRecommended: false }];
+      }
     },
+    staleTime: Infinity,
+    retry: 3,
   });
+
+  // Selected IP for display (defaults to first recommended or first available)
+  const [selectedIp, setSelectedIp] = useState<string>('');
+
+  // Set default selected IP when IPs are loaded
+  useEffect(() => {
+    if (localIps && localIps.length > 0 && !selectedIp) {
+      const recommended = localIps.find((ip) => ip.isRecommended);
+      setSelectedIp(recommended?.address || localIps[0].address);
+    }
+  }, [localIps, selectedIp]);
 
   // Local state for proxyConfig editing
   const [proxyConfig, setProxyConfig] = useState<ProxyConfig | undefined>(undefined);
   const [isRegenerateDialogOpen, setIsRegenerateDialogOpen] = useState(false);
   const [showKey, setShowKey] = useState(false);
 
-  // Sync config.proxy to local state when loaded
+  // Sync config.proxy to local state when loaded, and check actual server status
   useEffect(() => {
     if (config) {
-      setProxyConfig(config.proxy);
+      // Check actual server status and sync with config
+      const syncServerStatus = async () => {
+        try {
+          const status = await ipc.client.gateway.status();
+          const actualEnabled = status.running;
+
+          // If config says enabled but server not running, or vice versa, sync
+          if (config.proxy.enabled !== actualEnabled) {
+            const syncedConfig = { ...config.proxy, enabled: actualEnabled };
+            setProxyConfig(syncedConfig);
+            // Also save the corrected state
+            await saveConfig({ ...config, proxy: syncedConfig });
+          } else {
+            setProxyConfig(config.proxy);
+          }
+        } catch (e) {
+          // If status check fails, just use config value
+          setProxyConfig(config.proxy);
+        }
+      };
+      syncServerStatus();
     }
   }, [config]);
 
@@ -175,8 +213,23 @@ print(response.choices[0].message.content)`;
             <div className="flex items-center gap-2">
               <div className="font-semibold">{t('proxy.config.local_access', 'Local Access:')}</div>
               <code className="rounded bg-blue-100 px-1.5 py-0.5 font-mono select-all dark:bg-blue-900/50">
-                http://{localIp || 'localhost'}:{proxyConfig.port}/v1
+                http://{selectedIp || 'localhost'}:{proxyConfig.port}/v1
               </code>
+              {/* IP Selector Dropdown */}
+              {localIps && localIps.length > 1 && (
+                <Select value={selectedIp} onValueChange={setSelectedIp}>
+                  <SelectTrigger className="ml-2 h-7 w-auto min-w-[180px] text-xs">
+                    <SelectValue placeholder="Select IP" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {localIps.map((ip) => (
+                      <SelectItem key={ip.address} value={ip.address} className="text-xs">
+                        {ip.address} ({ip.name}){ip.isRecommended && ' ★'}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </div>
             {!proxyConfig.api_key && (
               <div className="flex items-center gap-2 text-xs font-medium text-amber-600 dark:text-amber-400">
