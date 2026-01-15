@@ -139,8 +139,9 @@ function createWindow() {
     logger.info('Page finished loading successfully');
   });
 
-  mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
-    logger.info(`[Renderer Console] ${message} (${sourceId}:${line})`);
+  mainWindow.webContents.on('console-message', (details) => {
+    const { level, message, lineNumber, sourceId } = details;
+    logger.info(`[Renderer Console][${level}] ${message} (${sourceId}:${lineNumber})`);
   });
 }
 
