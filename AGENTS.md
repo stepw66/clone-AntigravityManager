@@ -1,4 +1,3 @@
-
 <!-- OPENSPEC:START -->
 
 # OpenSpec Instructions
@@ -107,8 +106,6 @@ Keep this managed block so 'openspec update' can refresh the instructions.
   - `npm run test:e2e` - 运行 Playwright 端到端测试
   - `npm run test:all` - 运行所有测试
 
-- **数据库 (DB)**:
-  - `npm run test-db` - 运行数据库测试脚本
 
 ### 运行单个测试 (Running Single Tests)
 
@@ -117,6 +114,7 @@ Keep this managed block so 'openspec update' can refresh the instructions.
 - 类型检查: `npm run type-check`
 
 ## 🧪 开发注意事项（Development Notes）
+
 - **Build**: 构建阶段忽略 TS/ESLint 错误（如有特定配置或 CI 要求，请以实际为准）。
 - **DevTools**: 项目集成了 `code-inspector-plugin`，开发时支持从页面元素直接跳转代码（Shift+Click）。
 - **React**: React Strict Mode 关闭。
@@ -141,6 +139,7 @@ Keep this managed block so 'openspec update' can refresh the instructions.
 - **API 通信**: 前端调用后端优先使用 ORPC 客户端或 IPC，确保类型推导。
 
 ### 命名约定 (Naming Specifics)
+
 - **Functions/Variables**: camelCase (e.g., `handleClick`, `isCurrent`)
 - **Constants**: UPPER_SNAKE_CASE (e.g., `LOCAL_STORAGE_KEYS`)
 - **Files**:
@@ -221,6 +220,7 @@ export const Component: React.FC<ComponentProps> = ({ prop1 }) => {
 - 标题后保留一行空行，便于渲染与阅读。
 
 ## 换行规范
+
 return 等语句不要与其他语句在同一行，而是单独保持一行
 
 ## 💭 注释规范
@@ -278,7 +278,9 @@ try {
 }
 
 // 使用正确的错误类型
-if (error instanceof Error) { /* 处理 Error 实例 */ }
+if (error instanceof Error) {
+  /* 处理 Error 实例 */
+}
 ```
 
 ### 新功能实现
@@ -301,6 +303,7 @@ if (error instanceof Error) { /* 处理 Error 实例 */ }
 - \[ ] 形成 TODO 列表
 
 实现/重构/修复：
+
 - [ ] 阅读相关模板与周边代码，沿用既有模式
 - [ ] Fail fast：对非法输入/状态抛错，尽早暴露问题
 - [ ] 在约束内尽力提升前端交互与体验
@@ -335,9 +338,11 @@ if (error instanceof Error) { /* 处理 Error 实例 */ }
 ## 🔧 工具偏好与命令
 
 包与脚本：
+
 - `npm install` (或简写 `npm i`)
 
 Shell：
+
 - 在工作区根目录执行命令。
 - 路径建议使用引号包裹。
 
@@ -350,6 +355,7 @@ Web 搜索：
 - `context7` 获取依赖的最新用法
 
 VSCode MCP (如可用):
+
 - `mcp__vscode-mcp__get_references` 辅助重构范围判定
 - `mcp__vscode-mcp__rename_symbol` 安全重命名
 - `mcp__vscode-mcp__get_symbol_lsp_info` 获取类型/签名/定义等信息
@@ -384,15 +390,17 @@ change description 示例：
 When users ask you to perform tasks, check if any of the available skills below can help complete the task more effectively. Skills provide specialized capabilities and domain knowledge.
 
 How to use skills:
+
 - Invoke: Bash("openskills read <skill-name>")
 - The skill content will load with detailed instructions on how to complete the task
 - Base directory provided in output for resolving bundled resources (references/, scripts/, assets/)
 
 Usage notes:
+
 - Only use skills listed in <available_skills> below
 - Do not invoke a skill that is already loaded in your context
 - Each skill invocation is stateless
-</usage>
+  </usage>
 
 <available_skills>
 
@@ -493,7 +501,7 @@ Usage notes:
 </skill>
 
 </available_skills>
+
 <!-- SKILLS_TABLE_END -->
 
 </skills_system>
-
