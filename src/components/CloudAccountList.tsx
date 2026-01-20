@@ -62,19 +62,49 @@ export function CloudAccountList() {
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [authCode, setAuthCode] = useState('');
 
+  const handleAddAccount = (codeVal?: string) => {
+    const codeToUse = codeVal || authCode;
+    if (!codeToUse) {
+      return;
+    }
+    addMutation.mutate(
+      { authCode: codeToUse },
+      {
+        onSuccess: () => {
+          setIsAddDialogOpen(false);
+          setAuthCode('');
+          toast({ title: t('cloud.toast.addSuccess') });
+        },
+        onError: (err) => {
+          toast({
+            title: t('cloud.toast.addFailed.title'),
+            description: err.message,
+            variant: 'destructive',
+          });
+        },
+      },
+    );
+  };
   // Listen for Google Auth Code
   useEffect(() => {
     if (window.electron?.onGoogleAuthCode) {
+      console.log('[OAuth] Setting up auth code listener, dialog open:', isAddDialogOpen);
       const cleanup = window.electron.onGoogleAuthCode((code) => {
+        console.log('[OAuth] Received auth code via IPC:', code?.substring(0, 10) + '...');
         setAuthCode(code);
-        // Auto submit if dialog is open
-        if (isAddDialogOpen) {
-          handleAddAccount(code);
-        }
+        // Note: Auto-submit will be triggered by the authCode change effect below
       });
       return cleanup;
     }
-  }, [isAddDialogOpen]);
+  }, []);
+
+  // Auto-submit when authCode is set and dialog is open
+  useEffect(() => {
+    if (authCode && isAddDialogOpen && !addMutation.isPending) {
+      console.log('[OAuth] Auto-submitting auth code');
+      handleAddAccount(authCode);
+    }
+  }, [authCode, isAddDialogOpen]);
 
   // Batch Operations State
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -174,28 +204,6 @@ export function CloudAccountList() {
         });
       },
     });
-  };
-
-  const handleAddAccount = (codeVal?: string) => {
-    const codeToUse = codeVal || authCode;
-    if (!codeToUse) return;
-    addMutation.mutate(
-      { authCode: codeToUse },
-      {
-        onSuccess: () => {
-          setIsAddDialogOpen(false);
-          setAuthCode('');
-          toast({ title: t('cloud.toast.addSuccess') });
-        },
-        onError: (err) => {
-          toast({
-            title: t('cloud.toast.addFailed.title'),
-            description: err.message,
-            variant: 'destructive',
-          });
-        },
-      },
-    );
   };
 
   const openAuthUrl = async () => {

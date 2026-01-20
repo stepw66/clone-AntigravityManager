@@ -32,8 +32,6 @@ export async function isProcessRunning(): Promise<boolean> {
     // Increased timeout to 4000ms to avoid flakiness with tasklist/wmic
     try {
       const { stdout } = await execAsync(command, { timeout: 4000 });
-      logger.debug(`Process check stdout: ${stdout.trim()}`);
-
       if (platform === 'win32' || isWsl()) {
         return stdout.includes('Antigravity.exe');
       } else {

@@ -20,11 +20,13 @@ export class AuthServer {
         const error = url.searchParams.get('error');
 
         if (code) {
-          logger.info('AuthServer: Received authorization code');
+          logger.info(`AuthServer: Received authorization code: ${code.substring(0, 10)}...`);
 
           // Send code to renderer
           if (ipcContext.mainWindow) {
+            logger.info('AuthServer: Sending code to renderer via IPC');
             ipcContext.mainWindow.webContents.send('GOOGLE_AUTH_CODE', code);
+            logger.info('AuthServer: Code sent successfully');
           } else {
             logger.error('AuthServer: Main window not found, cannot send code');
           }
