@@ -144,6 +144,10 @@ function createWindow() {
     const { level, message, lineNumber, sourceId } = details;
     logger.info(`[Renderer Console][${level}] ${message} (${sourceId}:${lineNumber})`);
   });
+
+  mainWindow.on('focus', () => {
+    CloudMonitorService.handleAppFocus();
+  });
 }
 
 app.on('child-process-gone', (event, details) => {
