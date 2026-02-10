@@ -10,6 +10,7 @@ export interface CloudTokenData {
   email?: string;
   project_id?: string;
   session_id?: string;
+  upstream_proxy_url?: string;
 }
 
 export interface CloudQuotaData {
@@ -48,6 +49,7 @@ export const CloudTokenDataSchema = z.object({
   email: z.string().optional(),
   project_id: z.string().optional(),
   session_id: z.string().optional(),
+  upstream_proxy_url: z.string().optional(),
 });
 
 export const CloudQuotaDataSchema = z.object({

@@ -226,6 +226,8 @@ class NonStreamingProcessor {
     const usage: Usage = {
       input_tokens: geminiResponse.usageMetadata?.promptTokenCount || 0,
       output_tokens: geminiResponse.usageMetadata?.candidatesTokenCount || 0,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
     };
 
     return {
@@ -235,7 +237,6 @@ class NonStreamingProcessor {
       model: geminiResponse.modelVersion || '',
       content: this.contentBlocks,
       stop_reason: stopReason,
-      stop_sequence: null,
       usage: usage,
     };
   }

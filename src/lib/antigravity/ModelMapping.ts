@@ -3,6 +3,7 @@ import { logger } from '../../utils/logger';
 const CLAUDE_TO_GEMINI: Record<string, string> = {
   // Directly supported models
   'claude-opus-4-5-thinking': 'claude-opus-4-5-thinking',
+  'claude-opus-4-6-thinking': 'claude-opus-4-6-thinking',
   'claude-sonnet-4-5': 'claude-sonnet-4-5',
   'claude-sonnet-4-5-thinking': 'claude-sonnet-4-5-thinking',
 
@@ -12,21 +13,23 @@ const CLAUDE_TO_GEMINI: Record<string, string> = {
   'claude-3-5-sonnet-20240620': 'claude-sonnet-4-5',
   'claude-opus-4': 'claude-opus-4-5-thinking',
   'claude-opus-4-5-20251101': 'claude-opus-4-5-thinking',
+  'claude-opus-4-6': 'claude-opus-4-6-thinking',
+  'claude-opus-4-6-20260201': 'claude-opus-4-6-thinking',
   'claude-haiku-4': 'claude-sonnet-4-5',
   'claude-3-haiku-20240307': 'claude-sonnet-4-5',
   'claude-haiku-4-5-20251001': 'claude-sonnet-4-5',
 
   // OpenAI Protocol Mapping
-  'gpt-4': 'gemini-2.5-pro',
-  'gpt-4-turbo': 'gemini-2.5-pro',
-  'gpt-4-turbo-preview': 'gemini-2.5-pro',
-  'gpt-4-0125-preview': 'gemini-2.5-pro',
-  'gpt-4-1106-preview': 'gemini-2.5-pro',
-  'gpt-4-0613': 'gemini-2.5-pro',
+  'gpt-4': 'gemini-2.5-flash',
+  'gpt-4-turbo': 'gemini-2.5-flash',
+  'gpt-4-turbo-preview': 'gemini-2.5-flash',
+  'gpt-4-0125-preview': 'gemini-2.5-flash',
+  'gpt-4-1106-preview': 'gemini-2.5-flash',
+  'gpt-4-0613': 'gemini-2.5-flash',
 
-  'gpt-4o': 'gemini-2.5-pro',
-  'gpt-4o-2024-05-13': 'gemini-2.5-pro',
-  'gpt-4o-2024-08-06': 'gemini-2.5-pro',
+  'gpt-4o': 'gemini-2.5-flash',
+  'gpt-4o-2024-05-13': 'gemini-2.5-flash',
+  'gpt-4o-2024-08-06': 'gemini-2.5-flash',
 
   'gpt-4o-mini': 'gemini-2.5-flash',
   'gpt-4o-mini-2024-07-18': 'gemini-2.5-flash',
@@ -38,29 +41,68 @@ const CLAUDE_TO_GEMINI: Record<string, string> = {
   'gpt-3.5-turbo-0613': 'gemini-2.5-flash',
 
   // Gemini Protocol Mapping
-  'gemini-2.5-flash-lite': 'gemini-2.5-flash-lite',
+  'gemini-2.5-flash-lite': 'gemini-2.5-flash',
   'gemini-2.5-flash-thinking': 'gemini-2.5-flash-thinking',
-  'gemini-3-pro-low': 'gemini-3-pro-low',
-  'gemini-3-pro-high': 'gemini-3-pro-high',
+  'gemini-3-pro-low': 'gemini-3-pro-preview',
+  'gemini-3-pro-high': 'gemini-3-pro-preview',
   'gemini-3-pro-preview': 'gemini-3-pro-preview',
+  'gemini-3-pro': 'gemini-3-pro-preview',
   'gemini-2.5-flash': 'gemini-2.5-flash',
   'gemini-3-flash': 'gemini-3-flash',
   'gemini-3-pro-image': 'gemini-3-pro-image',
+  'internal-background-task': 'gemini-2.5-flash',
 };
 
+const DYNAMIC_IMAGE_BASE_MODEL = 'gemini-3-pro-image';
+const DYNAMIC_IMAGE_RESOLUTIONS = ['', '-2k', '-4k'];
+const DYNAMIC_IMAGE_RATIOS = ['', '-1x1', '-4x3', '-3x4', '-16x9', '-9x16', '-21x9'];
+const EXTRA_DYNAMIC_MODELS = [
+  'gemini-2.0-flash-exp',
+  'gemini-2.5-flash',
+  'gemini-3-flash',
+  'gemini-3-pro-high',
+  'gemini-3-pro-low',
+];
+
+export const MODEL_LIST_CREATED_AT = 1770652800;
+
+export const MODEL_LIST_OWNER = 'antigravity';
+
+export function getSupportedModels(): string[] {
+  return Object.keys(CLAUDE_TO_GEMINI);
+}
+
+export function getAllDynamicModels(customMapping: Record<string, string> = {}): string[] {
+  const modelIds = new Set<string>();
+
+  for (const modelId of getSupportedModels()) {
+    modelIds.add(modelId);
+  }
+
+  for (const customModelId of Object.keys(customMapping)) {
+    modelIds.add(customModelId);
+  }
+
+  for (const resolution of DYNAMIC_IMAGE_RESOLUTIONS) {
+    for (const ratio of DYNAMIC_IMAGE_RATIOS) {
+      modelIds.add(`${DYNAMIC_IMAGE_BASE_MODEL}${resolution}${ratio}`);
+    }
+  }
+
+  for (const modelId of EXTRA_DYNAMIC_MODELS) {
+    modelIds.add(modelId);
+  }
+
+  return [...modelIds].sort();
+}
+
 export function mapClaudeModelToGemini(input: string): string {
-  // 1. Check exact match in map
-  if (CLAUDE_TO_GEMINI[input]) {
-    return CLAUDE_TO_GEMINI[input];
+  const mappedModel = CLAUDE_TO_GEMINI[input];
+  if (mappedModel) {
+    return mappedModel;
   }
 
-  // 2. Pass-through known prefixes (gemini-, -thinking) to support dynamic suffixes
-  if (input.startsWith('gemini-') || input.includes('thinking')) {
-    return input;
-  }
-
-  // 3. Fallback to default
-  return 'claude-sonnet-4-5';
+  return input;
 }
 
 /**

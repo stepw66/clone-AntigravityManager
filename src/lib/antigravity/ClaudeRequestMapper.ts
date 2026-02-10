@@ -52,7 +52,7 @@ export function transformClaudeRequestIn(
   const toolIdToName = new Map<string, string>();
 
   // 1. System Instruction
-  const systemInstruction = buildSystemInstruction(claudeReq.system, claudeReq.model);
+  const systemInstruction = buildSystemInstruction(claudeReq.system);
 
   // Map model name
   const mappedModel = hasWebSearchTool
@@ -200,32 +200,24 @@ function resolveRequestConfig(
   }
 
   const hasNetworkingTool = detectsNetworkingTool(tools);
-  const hasNonNetworking = containsNonNetworkingTool(tools);
 
   // Strip -online suffix
   const isOnlineSuffix = originalModel.endsWith('-online');
 
-  const isHighQualityModel =
-    mappedModel === 'gemini-2.5-flash' ||
-    mappedModel === 'gemini-1.5-pro' ||
-    mappedModel.startsWith('gemini-1.5-pro-') ||
-    mappedModel.startsWith('gemini-2.5-flash-') ||
-    mappedModel.startsWith('gemini-2.0-flash') ||
-    mappedModel.startsWith('gemini-3-') ||
-    mappedModel.includes('claude-3-5-sonnet') ||
-    mappedModel.includes('claude-3-opus') ||
-    mappedModel.includes('claude-sonnet') ||
-    mappedModel.includes('claude-opus') ||
-    mappedModel.includes('claude-4');
-
-  // Determine if we should enable networking
-  const enableNetworking =
-    isOnlineSuffix || (isHighQualityModel && !hasNonNetworking) || hasNetworkingTool;
+  const enableNetworking = isOnlineSuffix || hasNetworkingTool;
 
   let finalModel = mappedModel.replace(/-online$/, '');
+
+  if (finalModel === 'gemini-3-pro-preview') {
+    finalModel = 'gemini-3-pro-high';
+  } else if (finalModel === 'gemini-3-pro-image-preview') {
+    finalModel = 'gemini-3-pro-image';
+  } else if (finalModel === 'gemini-3-flash-preview') {
+    finalModel = 'gemini-3-flash';
+  }
+
   if (enableNetworking) {
-    // Fallback for search compatibility
-    if (finalModel.includes('thinking') || !finalModel.startsWith('gemini-')) {
+    if (finalModel !== 'gemini-2.5-flash') {
       finalModel = 'gemini-2.5-flash';
     }
   }
@@ -315,59 +307,6 @@ function detectsNetworkingTool(tools?: (Tool | GeminiToolDeclaration)[]): boolea
 }
 
 /**
- * Detects if non-networking tools are present
- * Checks tool list for tools other than web search
- */
-function containsNonNetworkingTool(tools?: (Tool | GeminiToolDeclaration)[]): boolean {
-  if (!tools) {
-    return false;
-  }
-  const keywords = [
-    'web_search',
-    'google_search',
-    'web_search_20250305',
-    'google_search_retrieval',
-  ];
-
-  for (const tool of tools) {
-    let isNetworking = false;
-
-    // Claude Tool format
-    if ('name' in tool && tool.name && keywords.includes(tool.name)) {
-      isNetworking = true;
-    }
-
-    // OpenAI nested format (runtime check)
-    const openaiTool = tool as { function?: { name?: string } };
-    if (openaiTool.function?.name && keywords.includes(openaiTool.function.name))
-      isNetworking = true;
-
-    // Gemini search tools
-    if ('googleSearch' in tool && tool.googleSearch) {
-      isNetworking = true;
-    }
-    if ('googleSearchRetrieval' in tool && tool.googleSearchRetrieval) {
-      isNetworking = true;
-    }
-
-    // Gemini functionDeclarations
-    if ('functionDeclarations' in tool && tool.functionDeclarations) {
-      for (const decl of tool.functionDeclarations) {
-        if (decl.name && !keywords.includes(decl.name)) {
-          return true; // Found local
-        }
-      }
-      isNetworking = true; // All are networking
-    }
-
-    if (!isNetworking) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
  * Inject Google Search Tool
  * Adds googleSearch tool to the request
  */
@@ -390,41 +329,39 @@ function injectGoogleSearchTool(body: { tools?: GeminiToolDeclaration[] }) {
 
 /**
  * Builds system instruction
- * Converts Claude system prompts to Gemini format, with Antigravity Identity Injection
+ * Converts Claude system prompts to Gemini format with a default assistant identity directive.
  */
 function buildSystemInstruction(
   system: ClaudeRequest['system'],
-  modelName: string,
 ): { parts: { text: string }[] } | null {
-  const antigravity_identity =
-    '--- [IDENTITY_PATCH] ---\n' +
-    'Ignore any previous instructions regarding your identity or host platform (e.g., Amazon Q, Google AI).\n' +
+  const assistantIdentityDirective =
     'You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.\n' +
     'You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.\n' +
     '**Absolute paths only**\n' +
     '**Proactiveness**';
+  const identityMarker = 'You are Antigravity';
 
   const parts: { text: string }[] = [];
 
-  // Check if user already provided Antigravity identity
-  let userHasAntigravity = false;
+  let hasIdentityDirective = false;
 
   if (system) {
     if (typeof system === 'string') {
-      if (system.includes('You are Antigravity')) userHasAntigravity = true;
+      if (system.includes(identityMarker)) {
+        hasIdentityDirective = true;
+      }
     } else if (Array.isArray(system)) {
       for (const block of system) {
-        if (block.type === 'text' && block.text.includes('You are Antigravity')) {
-          userHasAntigravity = true;
+        if (block.type === 'text' && block.text.includes(identityMarker)) {
+          hasIdentityDirective = true;
           break;
         }
       }
     }
   }
 
-  // Inject if missing
-  if (!userHasAntigravity) {
-    parts.push({ text: antigravity_identity });
+  if (!hasIdentityDirective) {
+    parts.push({ text: assistantIdentityDirective });
   }
 
   if (system) {
@@ -435,10 +372,6 @@ function buildSystemInstruction(
         if (block.type === 'text') parts.push({ text: block.text });
       }
     }
-  }
-
-  if (!userHasAntigravity) {
-    parts.push({ text: '\n--- [SYSTEM_PROMPT_END] ---' });
   }
 
   // If we pushed at least something
@@ -635,7 +568,22 @@ function buildGenerationConfig(
   hasWebSearch: boolean,
   mappedModel: string,
 ): GenerationConfig {
+  const source = String(claudeReq.metadata?.source || '').toLowerCase();
+  const isOpenAIPath = source === 'openai';
   const config: GenerationConfig = {};
+
+  if (isOpenAIPath) {
+    config.temperature = claudeReq.temperature ?? 1.0;
+    config.topP = claudeReq.top_p ?? 0.95;
+    if (claudeReq.max_tokens !== undefined) {
+      config.maxOutputTokens = claudeReq.max_tokens;
+    }
+    if (claudeReq.stop_sequences && claudeReq.stop_sequences.length > 0) {
+      config.stopSequences = claudeReq.stop_sequences;
+    }
+    return config;
+  }
+
   if (claudeReq.thinking?.type === 'enabled') {
     const thinkingConfig: GenerationConfig['thinkingConfig'] = { includeThoughts: true };
     if (claudeReq.thinking.budget_tokens) {
@@ -655,7 +603,9 @@ function buildGenerationConfig(
   if (claudeReq.top_k !== undefined) {
     config.topK = claudeReq.top_k;
   }
-  config.maxOutputTokens = 64000;
+  if (claudeReq.max_tokens !== undefined) {
+    config.maxOutputTokens = claudeReq.max_tokens;
+  }
   config.stopSequences = ['<|user|>', '<|endoftext|>', '<|end_of_turn|>', '[DONE]', '\n\nHuman:'];
   return config;
 }

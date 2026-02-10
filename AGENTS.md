@@ -123,6 +123,8 @@ Use `npm` for all commands:
   - Tools/config: camelCase or kebab-case
 - **Import paths**: Use `@/` alias for `src/`.
 - **Type safety**: Avoid `any`; enforce end-to-end type safety with Zod + TypeScript.
+- **Utility methods**: Prefer `lodash-es` over native JavaScript utilities for array/object/string transformations to improve consistency and maintainability.
+  - Use named imports (for example, `import { get, groupBy, uniqBy } from 'lodash-es'`), and avoid full-package imports.
 - **Component design**:
   - Prefer Radix UI Primitives.
   - Use Tailwind utility classes; avoid CSS Modules unless necessary.

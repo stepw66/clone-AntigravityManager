@@ -10,6 +10,8 @@ export const ProxyConfigSchema = z.object({
   port: z.number(), // 监听端口
   api_key: z.string(), // API 密钥 (Also used for Admin Mode auth)
   auto_start: z.boolean(), // 是否自动启动
+  backend_canary_enabled: z.boolean().default(true),
+  custom_mapping: z.record(z.string(), z.string()).default({}),
   anthropic_mapping: z.record(z.string(), z.string()), // 映射表
   request_timeout: z.number().default(120), // 超时秒数
   upstream_proxy: UpstreamProxyConfigSchema,
@@ -49,6 +51,8 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
     port: 8045,
     api_key: '', // Generated dynamically if default needed
     auto_start: false,
+    backend_canary_enabled: true,
+    custom_mapping: {},
     anthropic_mapping: {},
     request_timeout: 120,
     upstream_proxy: {

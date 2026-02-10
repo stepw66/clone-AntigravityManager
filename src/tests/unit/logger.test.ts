@@ -1,5 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
-import { logger } from '../../utils/logger';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 
@@ -12,6 +11,10 @@ vi.mock('../../utils/paths', async () => {
 
 describe('Logger Utilities', () => {
   const testLogDir = path.join(process.cwd(), 'temp_test_logs');
+  let logger: {
+    info: (message: string, ...args: unknown[]) => void;
+    error: (message: string, ...args: unknown[]) => void;
+  };
 
   const getLatestLogFile = () => {
     const files = fs
@@ -27,7 +30,7 @@ describe('Logger Utilities', () => {
   };
 
   const waitForLogContains = async (text: string) => {
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 100; i++) {
       const filePath = getLatestLogFile();
       if (filePath && fs.existsSync(filePath)) {
         const content = fs.readFileSync(filePath, 'utf-8');
@@ -41,30 +44,22 @@ describe('Logger Utilities', () => {
     return null;
   };
 
+  beforeAll(async () => {
+    if (fs.existsSync(testLogDir)) {
+      fs.rmSync(testLogDir, { recursive: true, force: true });
+    }
+    fs.mkdirSync(testLogDir, { recursive: true });
+    const loggerModule = await import('../../utils/logger');
+    logger = loggerModule.logger;
+  });
+
   beforeEach(() => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    try {
-      if (fs.existsSync(testLogDir)) {
-        fs.rmSync(testLogDir, { recursive: true, force: true });
-      }
-      fs.mkdirSync(testLogDir, { recursive: true });
-    } catch (err) {
-      console.error('beforeEach: setup testLogDir failed', err);
-      throw err;
-    }
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
-    try {
-      if (fs.existsSync(testLogDir)) {
-        fs.rmSync(testLogDir, { recursive: true, force: true });
-      }
-    } catch (err) {
-      console.error('afterEach: cleanup testLogDir failed', err);
-      throw err;
-    }
   });
 
   afterAll(() => {

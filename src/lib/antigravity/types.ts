@@ -53,6 +53,7 @@ export interface ClaudeRequest {
   tools?: Tool[];
   stream?: boolean;
   max_tokens?: number;
+  stop_sequences?: string[];
   temperature?: number;
   top_p?: number;
   top_k?: number;
@@ -141,6 +142,8 @@ export interface Tool {
 
 export interface Metadata {
   user_id?: string;
+  source?: string;
+  [key: string]: unknown;
 }
 
 // ============================================================================
@@ -336,13 +339,15 @@ export interface ClaudeResponse {
   model: string;
   content: ContentBlock[];
   stop_reason: string;
-  stop_sequence: string | null;
+  stop_sequence?: string | null;
   usage: Usage;
 }
 
 export interface Usage {
   input_tokens: number;
   output_tokens: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
   /** Server tool usage stats */
   server_tool_use?: ServerToolUse;
 }

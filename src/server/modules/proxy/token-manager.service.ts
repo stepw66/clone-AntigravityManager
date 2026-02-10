@@ -8,20 +8,26 @@ interface TokenData {
   account_id: string;
   access_token: string;
   refresh_token: string;
+  token_type: string;
   expires_in: number;
   expiry_timestamp: number;
   project_id?: string;
   session_id?: string;
+  upstream_proxy_url?: string;
 }
 
 @Injectable()
 export class TokenManagerService implements OnModuleInit {
   private readonly logger = new Logger(TokenManagerService.name);
   private currentIndex = 0;
+  private readonly stickySessionTtlMs = 10 * 60 * 1000;
+  private readonly rateLimitCooldownMs = 5 * 60 * 1000;
+  private readonly forbiddenCooldownMs = 30 * 60 * 1000;
   // In-memory cache of tokens with additional data
   private tokens: Map<string, TokenData> = new Map();
   // Cooldown map for rate-limited accounts
   private cooldowns: Map<string, number> = new Map();
+  private sessionBindings: Map<string, { accountId: string; expiresAt: number }> = new Map();
 
   async onModuleInit() {
     // Load accounts on module initialization
@@ -41,10 +47,10 @@ export class TokenManagerService implements OnModuleInit {
         }
       }
 
-      this.logger.log(`Loaded ${count} accounts`);
+      this.logger.log(`Initialized token pool with ${count} accounts`);
       return count;
     } catch (e) {
-      this.logger.error('Failed to load accounts', e);
+      this.logger.error('Unable to load accounts', e);
       return 0;
     }
   }
@@ -57,10 +63,12 @@ export class TokenManagerService implements OnModuleInit {
       email: account.email,
       access_token: account.token.access_token,
       refresh_token: account.token.refresh_token,
+      token_type: account.token.token_type || 'Bearer',
       expires_in: account.token.expires_in,
       expiry_timestamp: account.token.expiry_timestamp,
       project_id: account.token.project_id || undefined,
       session_id: account.token.session_id || this.generateSessionId(),
+      upstream_proxy_url: account.token.upstream_proxy_url || undefined,
     };
   }
 
@@ -72,7 +80,10 @@ export class TokenManagerService implements OnModuleInit {
     return (-(min + rand)).toString();
   }
 
-  async getNextToken(): Promise<CloudAccount | null> {
+  async getNextToken(options?: {
+    sessionKey?: string;
+    excludeAccountIds?: string[];
+  }): Promise<CloudAccount | null> {
     try {
       // Reload if empty
       if (this.tokens.size === 0) {
@@ -82,25 +93,81 @@ export class TokenManagerService implements OnModuleInit {
 
       const now = Date.now();
       const nowSeconds = Math.floor(now / 1000);
+      const sessionKey = options?.sessionKey?.trim();
+      const excludedAccountIds = new Set(options?.excludeAccountIds ?? []);
+
+      this.clearExpiredSessionBindings(now);
+
+      const fullTokenPool = Array.from(this.tokens.entries());
+      const excludedFilteredTokens = fullTokenPool.filter(
+        ([accountId]) => !excludedAccountIds.has(accountId),
+      );
+      const allTokens = excludedFilteredTokens.length > 0 ? excludedFilteredTokens : fullTokenPool;
+      if (excludedFilteredTokens.length === 0 && excludedAccountIds.size > 0) {
+        this.logger.warn(
+          'Retry exclusions removed all accounts; temporarily reusing excluded accounts',
+        );
+      }
 
       // Filter out accounts in cooldown
-      const validTokens = Array.from(this.tokens.entries()).filter(([email, _]) => {
-        const cooldownUntil = this.cooldowns.get(email);
+      const validTokens = allTokens.filter(([accountId]) => {
+        if (excludedAccountIds.has(accountId)) {
+          return false;
+        }
+
+        const cooldownUntil = this.cooldowns.get(accountId);
         return !cooldownUntil || cooldownUntil <= now;
       });
 
-      if (validTokens.length === 0) {
-        this.logger.warn('All accounts are in cooldown');
+      const candidateTokens = validTokens.length > 0 ? validTokens : allTokens;
+      if (candidateTokens.length === 0) {
+        this.logger.warn('No account available after applying exclusions');
         return null;
+      }
+      if (validTokens.length === 0) {
+        this.logger.warn(
+          'All accounts are currently in cooldown; temporarily bypassing cooldown to keep service available',
+        );
+      }
+
+      if (sessionKey) {
+        const stickyBinding = this.sessionBindings.get(sessionKey);
+        if (stickyBinding && stickyBinding.expiresAt > now) {
+          const stickyMatch = candidateTokens.find(
+            ([accountId]) => accountId === stickyBinding.accountId,
+          );
+          if (stickyMatch) {
+            const [stickyAccountId, stickyTokenData] = stickyMatch;
+            return this.finalizeSelectedToken(
+              stickyAccountId,
+              stickyTokenData,
+              nowSeconds,
+              sessionKey,
+            );
+          }
+        }
       }
 
       // Round robin selection
-      const [accountId, tokenData] = validTokens[this.currentIndex % validTokens.length];
+      const [accountId, tokenData] = candidateTokens[this.currentIndex % candidateTokens.length];
       this.currentIndex++;
+      return this.finalizeSelectedToken(accountId, tokenData, nowSeconds, sessionKey);
+    } catch (error) {
+      this.logger.error('Unable to acquire token', error);
+      return null;
+    }
+  }
 
+  private async finalizeSelectedToken(
+    accountId: string,
+    tokenData: TokenData,
+    nowSeconds: number,
+    sessionKey?: string,
+  ): Promise<CloudAccount | null> {
+    try {
       // Check if token needs refresh (expires in < 5 minutes)
       if (nowSeconds >= tokenData.expiry_timestamp - 300) {
-        this.logger.log(`Token for ${tokenData.email} expiring soon, refreshing...`);
+        this.logger.log(`Token for ${tokenData.email} is close to expiry; refreshing...`);
         try {
           const newTokens = await GoogleAPIService.refreshAccessToken(tokenData.refresh_token);
 
@@ -113,51 +180,96 @@ export class TokenManagerService implements OnModuleInit {
           await this.saveRefreshedToken(accountId, tokenData);
           this.tokens.set(accountId, tokenData);
 
-          this.logger.log(`Token refreshed for ${tokenData.email}`);
+          this.logger.log(`Refreshed token for ${tokenData.email}`);
         } catch (e) {
-          this.logger.error(`Failed to refresh token for ${tokenData.email}`, e);
+          this.logger.error(`Unable to refresh token for ${tokenData.email}`, e);
         }
       }
 
-      // Resolve project ID if missing (mock for now, like original)
-      if (!tokenData.project_id) {
-        const mockId = `cloud-code-${Math.floor(Math.random() * 100000)}`;
-        tokenData.project_id = mockId;
-        await this.saveProjectId(accountId, mockId);
+      if (
+        typeof tokenData.project_id !== 'string' ||
+        tokenData.project_id.trim() === '' ||
+        /^cloud-code-\d+$/i.test(tokenData.project_id.trim())
+      ) {
+        tokenData.project_id = undefined;
       }
 
-      this.logger.log(`Selected account: ${tokenData.email}`);
+      this.logger.log(`Using account: ${tokenData.email}`);
+      if (sessionKey) {
+        this.sessionBindings.set(sessionKey, {
+          accountId,
+          expiresAt: Date.now() + this.stickySessionTtlMs,
+        });
+      }
 
       // Return in CloudAccount format for compatibility
-      return {
+      const timestamp = Date.now();
+      const cloudAccount: CloudAccount = {
         id: accountId,
+        provider: 'google',
         email: tokenData.email,
         token: {
           access_token: tokenData.access_token,
           refresh_token: tokenData.refresh_token,
+          token_type: tokenData.token_type,
           expires_in: tokenData.expires_in,
           expiry_timestamp: tokenData.expiry_timestamp,
           project_id: tokenData.project_id,
           session_id: tokenData.session_id,
+          upstream_proxy_url: tokenData.upstream_proxy_url,
         },
-      } as CloudAccount;
+        created_at: timestamp,
+        last_used: timestamp,
+      };
+      return cloudAccount;
     } catch (error) {
-      this.logger.error('Failed to get token', error);
+      this.logger.error('Unable to finalize selected token', error);
       return null;
     }
   }
 
-  markAsRateLimited(email: string) {
-    // Cooldown for 5 minutes
-    const until = Date.now() + 5 * 60 * 1000;
-    this.cooldowns.set(email, until);
-    this.logger.warn(
-      `Account ${email} marked as rate limited until ${new Date(until).toISOString()}`,
-    );
+  markAsRateLimited(accountIdOrEmail: string) {
+    this.markInCooldown(accountIdOrEmail, 'rate limited', this.rateLimitCooldownMs);
   }
 
-  resetCooldown(email: string) {
-    this.cooldowns.delete(email);
+  markAsForbidden(accountIdOrEmail: string) {
+    this.markInCooldown(accountIdOrEmail, 'forbidden', this.forbiddenCooldownMs);
+  }
+
+  private resolveAccountId(accountIdOrEmail: string): string | null {
+    if (this.tokens.has(accountIdOrEmail)) {
+      return accountIdOrEmail;
+    }
+
+    for (const [accountId, tokenData] of this.tokens.entries()) {
+      if (tokenData.email === accountIdOrEmail) {
+        return accountId;
+      }
+    }
+
+    return null;
+  }
+
+  private clearExpiredSessionBindings(now: number): void {
+    for (const [sessionKey, binding] of this.sessionBindings.entries()) {
+      if (binding.expiresAt <= now) {
+        this.sessionBindings.delete(sessionKey);
+      }
+    }
+  }
+
+  private markInCooldown(
+    accountIdOrEmail: string,
+    reason: 'rate limited' | 'forbidden',
+    durationMs: number,
+  ): void {
+    const accountId = this.resolveAccountId(accountIdOrEmail) ?? accountIdOrEmail;
+    const cooldownUntil = Date.now() + durationMs;
+
+    this.cooldowns.set(accountId, cooldownUntil);
+    this.logger.warn(
+      `Account ${accountIdOrEmail} (cooldown key: ${accountId}) set to ${reason} until ${new Date(cooldownUntil).toISOString()}`,
+    );
   }
 
   private async saveRefreshedToken(accountId: string, tokenData: TokenData) {
@@ -173,22 +285,7 @@ export class TokenManagerService implements OnModuleInit {
         await CloudAccountRepo.updateToken(accountId, newToken);
       }
     } catch (e) {
-      this.logger.error('Failed to save refreshed token to DB', e);
-    }
-  }
-
-  private async saveProjectId(accountId: string, projectId: string) {
-    try {
-      const acc = await CloudAccountRepo.getAccount(accountId);
-      if (acc && acc.token) {
-        const newToken = {
-          ...acc.token,
-          project_id: projectId,
-        };
-        await CloudAccountRepo.updateToken(accountId, newToken);
-      }
-    } catch (e) {
-      this.logger.error('Failed to save project ID to DB', e);
+      this.logger.error('Unable to persist refreshed token to DB', e);
     }
   }
 
