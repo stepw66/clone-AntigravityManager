@@ -3,6 +3,9 @@
  * and calculating aggregated statistics.
  */
 
+import { flatMap, groupBy, keys, map, min, sortBy, sumBy } from 'lodash-es';
+import { roundQuotaPercentage } from '@/utils/quota-display';
+
 export interface ProviderInfo {
   name: string;
   company: string;
@@ -29,16 +32,25 @@ export const PROVIDER_REGISTRY: Record<string, ProviderInfo> = {
 
 export type ProviderKey = keyof typeof PROVIDER_REGISTRY;
 
+const HEALTH_STATUS_THRESHOLDS = {
+  critical: 10,
+  limited: 25,
+  degraded: 50,
+} as const;
+
 /**
  * Detect the provider key for a given model name based on prefix matching.
  */
 export function detectProvider(modelName: string): ProviderKey {
-  for (const prefix of Object.keys(PROVIDER_REGISTRY)) {
-    if (prefix !== 'others' && modelName.startsWith(prefix)) {
-      return prefix;
-    }
+  const matchedPrefix = keys(PROVIDER_REGISTRY).find(
+    (prefix) => prefix !== 'others' && modelName.startsWith(prefix),
+  );
+
+  if (!matchedPrefix) {
+    return 'others';
   }
-  return 'others';
+
+  return matchedPrefix as ProviderKey;
 }
 
 /**
@@ -64,6 +76,58 @@ export interface ProviderStats {
   earliestReset: string | null;
 }
 
+function toRoundedAverage(models: ModelQuota[]): number {
+  if (models.length === 0) {
+    return 0;
+  }
+
+  const averagePercentage = sumBy(models, (model) => model.percentage) / models.length;
+
+  return roundQuotaPercentage(averagePercentage);
+}
+
+function parseResetTimestamp(resetTime: string): number | null {
+  if (!resetTime) {
+    return null;
+  }
+
+  const timestamp = new Date(resetTime).getTime();
+  if (Number.isNaN(timestamp)) {
+    return null;
+  }
+
+  return timestamp;
+}
+
+function resolveAccountHealthStatus(overallPercentage: number): AccountStats['healthStatus'] {
+  if (overallPercentage < HEALTH_STATUS_THRESHOLDS.critical) {
+    return 'critical';
+  }
+  if (overallPercentage < HEALTH_STATUS_THRESHOLDS.limited) {
+    return 'limited';
+  }
+  if (overallPercentage < HEALTH_STATUS_THRESHOLDS.degraded) {
+    return 'degraded';
+  }
+  return 'healthy';
+}
+
+function buildProviderStats(
+  providerKey: ProviderKey,
+  models: ModelQuota[],
+  visibleModels: ModelQuota[],
+  earliestReset: string | null,
+): ProviderStats {
+  return {
+    providerKey,
+    providerInfo: PROVIDER_REGISTRY[providerKey],
+    models,
+    visibleModels,
+    avgPercentage: toRoundedAverage(visibleModels),
+    earliestReset,
+  };
+}
+
 /**
  * Calculate aggregated stats for a group of models belonging to one provider.
  */
@@ -75,36 +139,18 @@ export function calculateProviderStats(
   const visibleModels = models.filter((m) => visibilitySettings[m.id] !== false);
 
   if (visibleModels.length === 0) {
-    return {
-      providerKey,
-      providerInfo: PROVIDER_REGISTRY[providerKey],
-      models,
-      visibleModels: [],
-      avgPercentage: 0,
-      earliestReset: null,
-    };
+    return buildProviderStats(providerKey, models, [], null);
   }
 
-  const avgPercentage =
-    visibleModels.reduce((sum, m) => sum + m.percentage, 0) / visibleModels.length;
+  const resetTimes = map(visibleModels, (model) => parseResetTimestamp(model.resetTime)).filter(
+    (timestamp): timestamp is number => timestamp !== null,
+  );
 
-  const resetTimes = visibleModels
-    .map((m) => m.resetTime)
-    .filter(Boolean)
-    .map((time) => new Date(time).getTime())
-    .filter((t) => !Number.isNaN(t));
-
+  const earliestTimestamp = min(resetTimes);
   const earliestReset =
-    resetTimes.length > 0 ? new Date(Math.min(...resetTimes)).toISOString() : null;
+    earliestTimestamp !== undefined ? new Date(earliestTimestamp).toISOString() : null;
 
-  return {
-    providerKey,
-    providerInfo: PROVIDER_REGISTRY[providerKey],
-    models,
-    visibleModels,
-    avgPercentage: Math.round(avgPercentage * 10) / 10,
-    earliestReset,
-  };
+  return buildProviderStats(providerKey, models, visibleModels, earliestReset);
 }
 
 export interface AccountStats {
@@ -122,53 +168,40 @@ export function groupModelsByProvider(
   models: Record<string, { percentage: number; resetTime: string }>,
   visibilitySettings: Record<string, boolean>,
 ): AccountStats {
-  const grouped: Record<ProviderKey, ModelQuota[]> = {};
-
-  for (const [modelName, info] of Object.entries(models)) {
-    const key = detectProvider(modelName);
-    if (!grouped[key]) {
-      grouped[key] = [];
-    }
-    grouped[key].push({
+  const modelQuotas = map(models, (info, modelName) => ({
+    providerKey: detectProvider(modelName),
+    quota: {
       id: modelName,
       percentage: info.percentage,
       resetTime: info.resetTime,
-    });
-  }
+    },
+  }));
 
-  const providers: ProviderStats[] = [];
-  for (const [key, groupModels] of Object.entries(grouped)) {
-    providers.push(calculateProviderStats(key, groupModels, visibilitySettings));
-  }
+  const providerModelGroups = groupBy(modelQuotas, (modelQuota) => modelQuota.providerKey);
+  const providerStatsList = map(providerModelGroups, (groupedQuotas, key) => {
+    const providerKey = key as ProviderKey;
+    const providerModels = map(groupedQuotas, (groupedQuota) => groupedQuota.quota);
+
+    return calculateProviderStats(providerKey, providerModels, visibilitySettings);
+  });
 
   // Sort: known providers first (claude-, gemini-), then others
-  const providerOrder = Object.keys(PROVIDER_REGISTRY);
-  providers.sort(
-    (a, b) => providerOrder.indexOf(a.providerKey) - providerOrder.indexOf(b.providerKey),
+  const providerDisplayOrder = keys(PROVIDER_REGISTRY);
+  const sortedProviders = sortBy(
+    providerStatsList,
+    (providerStats) => providerDisplayOrder.indexOf(providerStats.providerKey),
   );
 
-  const allVisibleModels = providers.flatMap((p) => p.visibleModels);
-  const totalModels = providers.reduce((sum, p) => sum + p.models.length, 0);
-
-  const overallPercentage =
-    allVisibleModels.length > 0
-      ? allVisibleModels.reduce((sum, m) => sum + m.percentage, 0) / allVisibleModels.length
-      : 0;
-
-  let healthStatus: AccountStats['healthStatus'] = 'healthy';
-  if (overallPercentage < 10) {
-    healthStatus = 'critical';
-  } else if (overallPercentage < 25) {
-    healthStatus = 'limited';
-  } else if (overallPercentage < 50) {
-    healthStatus = 'degraded';
-  }
+  const allVisibleModels = flatMap(sortedProviders, (providerStats) => providerStats.visibleModels);
+  const totalModels = sumBy(sortedProviders, (providerStats) => providerStats.models.length);
+  const overallPercentage = toRoundedAverage(allVisibleModels);
+  const healthStatus = resolveAccountHealthStatus(overallPercentage);
 
   return {
-    providers,
+    providers: sortedProviders,
     totalModels,
     visibleModels: allVisibleModels.length,
-    overallPercentage: Math.round(overallPercentage * 10) / 10,
+    overallPercentage,
     healthStatus,
   };
 }

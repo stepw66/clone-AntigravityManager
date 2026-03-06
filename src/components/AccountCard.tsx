@@ -11,10 +11,18 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { MoreVertical, Trash2, RefreshCw } from 'lucide-react';
-import { formatDistanceToNow } from 'date-fns';
+import { formatDistanceToNow, type Locale } from 'date-fns';
 import { enUS, zhCN, ru } from 'date-fns/locale';
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
+
+const DEFAULT_GLARE_POSITION = { x: 50, y: 50 };
+const DEFAULT_CARD_TRANSFORM = 'perspective(1000px) rotateX(0deg) rotateY(0deg) scale3d(1, 1, 1)';
+const DATE_LOCALE_MAP: Record<string, Locale> = {
+  en: enUS,
+  'zh-CN': zhCN,
+  ru: ru,
+};
 
 interface AccountCardProps {
   account: Account;
@@ -35,8 +43,8 @@ export const AccountCard: React.FC<AccountCardProps> = ({
 }) => {
   const { t, i18n } = useTranslation();
   const cardRef = useRef<HTMLDivElement>(null);
-  const [transform, setTransform] = useState('');
-  const [glarePosition, setGlarePosition] = useState({ x: 50, y: 50 });
+  const [cardTransform, setCardTransform] = useState('');
+  const [glarePosition, setGlarePosition] = useState(DEFAULT_GLARE_POSITION);
 
   const initials = account.name
     ? account.name
@@ -47,38 +55,38 @@ export const AccountCard: React.FC<AccountCardProps> = ({
         .slice(0, 2)
     : account.email[0].toUpperCase();
 
-  // 处理鼠标移动，计算 3D 旋转角度
-  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+  // Handle pointer movement and calculate 3D rotation angles
+  const handleMouseMove = (event: React.MouseEvent<HTMLDivElement>) => {
     if (!cardRef.current) return;
 
     const rect = cardRef.current.getBoundingClientRect();
     const centerX = rect.left + rect.width / 2;
     const centerY = rect.top + rect.height / 2;
 
-    // 计算鼠标相对于卡片中心的位置 (-1 到 1)
-    const relativeX = (e.clientX - centerX) / (rect.width / 2);
-    const relativeY = (e.clientY - centerY) / (rect.height / 2);
+    // Calculate pointer position relative to the card center (-1 to 1)
+    const relativeX = (event.clientX - centerX) / (rect.width / 2);
+    const relativeY = (event.clientY - centerY) / (rect.height / 2);
 
-    // 最大旋转角度
+    // Maximum rotation angle
     const maxRotation = 15;
-    const rotateX = -relativeY * maxRotation; // 上下倾斜
-    const rotateY = relativeX * maxRotation; // 左右倾斜
+    const rotateX = -relativeY * maxRotation; // Vertical tilt
+    const rotateY = relativeX * maxRotation; // Horizontal tilt
 
-    setTransform(
+    setCardTransform(
       `perspective(1000px) rotateX(${rotateX}deg) rotateY(${rotateY}deg) scale3d(1.02, 1.02, 1.02)`,
     );
 
-    // 更新光泽位置
+    // Update glare position
     setGlarePosition({
-      x: ((e.clientX - rect.left) / rect.width) * 100,
-      y: ((e.clientY - rect.top) / rect.height) * 100,
+      x: ((event.clientX - rect.left) / rect.width) * 100,
+      y: ((event.clientY - rect.top) / rect.height) * 100,
     });
   };
 
-  // 鼠标离开时重置
+  // Reset when pointer leaves
   const handleMouseLeave = () => {
-    setTransform('perspective(1000px) rotateX(0deg) rotateY(0deg) scale3d(1, 1, 1)');
-    setGlarePosition({ x: 50, y: 50 });
+    setCardTransform(DEFAULT_CARD_TRANSFORM);
+    setGlarePosition(DEFAULT_GLARE_POSITION);
   };
 
   return (
@@ -87,18 +95,18 @@ export const AccountCard: React.FC<AccountCardProps> = ({
       onMouseMove={handleMouseMove}
       onMouseLeave={handleMouseLeave}
       style={{
-        transform,
+        transform: cardTransform,
         transformStyle: 'preserve-3d',
-        transition: transform ? 'transform 0.1s ease-out' : 'transform 0.5s ease-out',
+        transition: cardTransform ? 'transform 0.1s ease-out' : 'transform 0.5s ease-out',
       }}
       className="relative"
     >
-      {/* 光泽效果层 */}
+      {/* Glare overlay */}
       <div
         className="pointer-events-none absolute inset-0 z-10 rounded-xl opacity-0 transition-opacity duration-300 group-hover:opacity-100"
         style={{
           background: `radial-gradient(circle at ${glarePosition.x}% ${glarePosition.y}%, rgba(255,255,255,0.15) 0%, transparent 60%)`,
-          opacity: transform ? 0.6 : 0,
+          opacity: cardTransform ? 0.6 : 0,
         }}
       />
 
@@ -137,7 +145,7 @@ export const AccountCard: React.FC<AccountCardProps> = ({
                 {t('account.lastUsed', {
                   time: formatDistanceToNow(new Date(account.last_used), {
                     addSuffix: true,
-                    locale: { en: enUS, 'zh-CN': zhCN, ru: ru }[i18n.language] || enUS,
+                    locale: DATE_LOCALE_MAP[i18n.language] || enUS,
                   }),
                 })}
               </p>

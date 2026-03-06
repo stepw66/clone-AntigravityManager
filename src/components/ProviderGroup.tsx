@@ -4,16 +4,17 @@ import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 
 import type { ProviderStats } from '@/utils/provider-grouping';
+import { clampQuotaPercentage } from '@/utils/quota-display';
 
 interface ProviderGroupProps {
   stats: ProviderStats;
   isCollapsed: boolean;
   onToggleCollapse: () => void;
-  getQuotaColor: (percentage: number) => string;
-  getQuotaBarColor: (percentage: number) => string;
-  getQuotaLabel: (percentage: number) => string;
-  getResetTimeLabel: (resetTime?: string) => string;
-  getResetTimeTitle: (resetTime?: string) => string | undefined;
+  getQuotaTextColorClass: (percentage: number) => string;
+  getQuotaBarColorClass: (percentage: number) => string;
+  formatQuotaLabel: (percentage: number) => string;
+  formatResetTimeLabel: (resetTime?: string) => string;
+  formatResetTimeTitle: (resetTime?: string) => string | undefined;
   leftLabel: string;
 }
 
@@ -21,11 +22,11 @@ export const ProviderGroup: React.FC<ProviderGroupProps> = ({
   stats,
   isCollapsed,
   onToggleCollapse,
-  getQuotaColor,
-  getQuotaBarColor,
-  getQuotaLabel,
-  getResetTimeLabel,
-  getResetTimeTitle,
+  getQuotaTextColorClass,
+  getQuotaBarColorClass,
+  formatQuotaLabel,
+  formatResetTimeLabel,
+  formatResetTimeTitle,
   leftLabel,
 }) => {
   const { t } = useTranslation();
@@ -69,14 +70,14 @@ export const ProviderGroup: React.FC<ProviderGroupProps> = ({
           {earliestReset && (
             <span
               className="text-muted-foreground text-[10px]"
-              title={getResetTimeTitle(earliestReset)}
+              title={formatResetTimeTitle(earliestReset)}
             >
-              {getResetTimeLabel(earliestReset)}
+              {formatResetTimeLabel(earliestReset)}
             </span>
           )}
           <div className="flex items-baseline gap-1">
-            <span className={`font-mono text-xs font-bold ${getQuotaColor(avgPercentage)}`}>
-              {getQuotaLabel(avgPercentage)}
+            <span className={`font-mono text-xs font-bold ${getQuotaTextColorClass(avgPercentage)}`}>
+              {formatQuotaLabel(avgPercentage)}
             </span>
             {avgPercentage > 0 && (
               <span className="text-muted-foreground text-[10px]">
@@ -86,8 +87,8 @@ export const ProviderGroup: React.FC<ProviderGroupProps> = ({
           </div>
           <div className="bg-muted h-1.5 w-16 overflow-hidden rounded-full">
             <div
-              className={`h-full rounded-full transition-all duration-300 ${getQuotaBarColor(avgPercentage)}`}
-              style={{ width: `${Math.max(0, Math.min(100, avgPercentage))}%` }}
+              className={`h-full rounded-full transition-all duration-300 ${getQuotaBarColorClass(avgPercentage)}`}
+              style={{ width: `${clampQuotaPercentage(avgPercentage)}%` }}
             />
           </div>
         </div>
@@ -109,15 +110,15 @@ export const ProviderGroup: React.FC<ProviderGroupProps> = ({
               <div className="flex flex-col items-end gap-1">
                 <span
                   className="text-muted-foreground text-[10px] leading-none"
-                  title={getResetTimeTitle(model.resetTime)}
+                  title={formatResetTimeTitle(model.resetTime)}
                 >
-                  {getResetTimeLabel(model.resetTime)}
+                  {formatResetTimeLabel(model.resetTime)}
                 </span>
                 <div className="flex items-baseline gap-1.5">
                   <span
-                    className={`font-mono leading-none font-bold ${getQuotaColor(model.percentage)}`}
+                    className={`font-mono leading-none font-bold ${getQuotaTextColorClass(model.percentage)}`}
                   >
-                    {getQuotaLabel(model.percentage)}
+                    {formatQuotaLabel(model.percentage)}
                   </span>
                   {model.percentage > 0 && (
                     <span className="text-muted-foreground text-[10px]">{leftLabel}</span>
@@ -125,8 +126,8 @@ export const ProviderGroup: React.FC<ProviderGroupProps> = ({
                 </div>
                 <div className="bg-muted h-1.5 w-24 overflow-hidden rounded-full">
                   <div
-                    className={`h-full rounded-full transition-all duration-300 ${getQuotaBarColor(model.percentage)}`}
-                    style={{ width: `${Math.max(0, Math.min(100, model.percentage))}%` }}
+                    className={`h-full rounded-full transition-all duration-300 ${getQuotaBarColorClass(model.percentage)}`}
+                    style={{ width: `${clampQuotaPercentage(model.percentage)}%` }}
                   />
                 </div>
               </div>

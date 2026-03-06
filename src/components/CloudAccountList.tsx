@@ -44,13 +44,18 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { getLocalizedErrorMessage } from '@/utils/errorMessages';
 import { useAppConfig } from '@/hooks/useAppConfig';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-
-// ... (existing code: imports and comments)
+import { filter, flatMap, isEmpty, size, sumBy } from 'lodash-es';
+import {
+  clampQuotaPercentage,
+  getQuotaStatus,
+  roundQuotaPercentage,
+  type QuotaStatus,
+} from '@/utils/quota-display';
 
 export type GridLayout = 'auto' | '2-col' | '3-col' | 'list';
 
@@ -59,6 +64,18 @@ const GRID_LAYOUT_CLASSES: Record<GridLayout, string> = {
   '2-col': 'grid gap-4 grid-cols-2',
   '3-col': 'grid gap-4 grid-cols-3',
   list: 'grid gap-4 grid-cols-1',
+};
+
+const GLOBAL_QUOTA_BAR_COLOR_CLASS_BY_STATUS: Record<QuotaStatus, string> = {
+  high: 'bg-emerald-500',
+  medium: 'bg-amber-500',
+  low: 'bg-rose-500',
+};
+
+const GLOBAL_QUOTA_TEXT_COLOR_CLASS_BY_STATUS: Record<QuotaStatus, string> = {
+  high: 'text-emerald-600 dark:text-emerald-400',
+  medium: 'text-amber-600 dark:text-amber-400',
+  low: 'text-rose-600 dark:text-rose-400',
 };
 
 export function CloudAccountList() {
@@ -76,75 +93,59 @@ export function CloudAccountList() {
   const forcePollMutation = useForcePollCloudMonitor();
 
   const { toast } = useToast();
-  const lastCloudLoadErrorToastAt = useRef<number>(0);
+  const lastLoadErrorToastAtRef = useRef<number>(0);
 
   const gridLayout: GridLayout = (config?.grid_layout as GridLayout) || 'auto';
 
-  const setGridLayout = async (layout: GridLayout) => {
+  const updateGridLayout = async (layout: GridLayout) => {
     if (config) {
       await saveConfig({ ...config, grid_layout: layout });
     }
   };
 
   // Calculate global quota across all accounts
-  const globalQuota = useMemo(() => {
+  const overallQuotaPercentage = useMemo(() => {
     if (!accounts || accounts.length === 0) {
       return null;
     }
 
     const visibilitySettings = config?.model_visibility ?? {};
-    let totalPercentage = 0;
-    let modelCount = 0;
-
-    accounts.forEach((account) => {
+    const visibleModelInfos = flatMap(accounts, (account) => {
       if (!account.quota?.models) {
-        return;
+        return [];
       }
-      Object.entries(account.quota.models).forEach(([modelName, info]) => {
-        if (visibilitySettings[modelName] !== false) {
-          totalPercentage += info.percentage;
-          modelCount++;
-        }
-      });
+
+      return Object.entries(account.quota.models)
+        .filter(([modelName]) => visibilitySettings[modelName] !== false)
+        .map(([, info]) => info);
     });
 
-    if (modelCount === 0) {
+    if (isEmpty(visibleModelInfos)) {
       return null;
     }
 
-    return Math.round((totalPercentage / modelCount) * 10) / 10;
+    const averagePercentage =
+      sumBy(visibleModelInfos, (modelInfo) => modelInfo.percentage) / visibleModelInfos.length;
+
+    return roundQuotaPercentage(averagePercentage);
   }, [accounts, config?.model_visibility]);
 
-  const getGlobalQuotaColor = (percentage: number) => {
-    if (percentage > 80) {
-      return 'bg-emerald-500';
-    }
-    if (percentage > 20) {
-      return 'bg-amber-500';
-    }
-    return 'bg-rose-500';
-  };
-
-  const getGlobalQuotaTextColor = (percentage: number) => {
-    if (percentage > 80) {
-      return 'text-emerald-600 dark:text-emerald-400';
-    }
-    if (percentage > 20) {
-      return 'text-amber-600 dark:text-amber-400';
-    }
-    return 'text-rose-600 dark:text-rose-400';
-  };
+  const overallQuotaStatus =
+    overallQuotaPercentage === null ? null : getQuotaStatus(overallQuotaPercentage);
+  const effectiveQuotaStatus: QuotaStatus = overallQuotaStatus ?? 'low';
 
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [authCode, setAuthCode] = useState('');
   const [identityAccount, setIdentityAccount] = useState<CloudAccount | null>(null);
-  const totalAccounts = accounts?.length || 0;
-  const activeAccounts = accounts?.filter((account) => account.is_active).length || 0;
-  const rateLimitedAccounts =
-    accounts?.filter((account) => account.status === 'rate_limited').length || 0;
+  const totalAccounts = size(accounts);
+  const activeAccounts = filter(accounts, (account) => account.is_active).length;
+  const rateLimitedAccounts = filter(
+    accounts,
+    (account) => account.status === 'rate_limited',
+  ).length;
 
-  const handleAddAccount = (codeVal?: string) => {
-    const codeToUse = codeVal || authCode;
+  const submitAuthCode = useCallback((incomingAuthCode?: string) => {
+    const codeToUse = incomingAuthCode || authCode;
     if (!codeToUse) {
       return;
     }
@@ -165,15 +166,14 @@ export function CloudAccountList() {
         },
       },
     );
-  };
+  }, [addMutation, authCode, t, toast]);
   // Listen for Google Auth Code
   useEffect(() => {
     if (window.electron?.onGoogleAuthCode) {
-      console.log('[OAuth] Setting up auth code listener, dialog open:', isAddDialogOpen);
+      console.log('[OAuth] Registering Google auth code IPC listener');
       const cleanup = window.electron.onGoogleAuthCode((code) => {
-        console.log('[OAuth] Received auth code via IPC:', code?.substring(0, 10) + '...');
+        console.log('[OAuth] Received Google auth code via IPC:', code?.substring(0, 10) + '...');
         setAuthCode(code);
-        // Note: Auto-submit will be triggered by the authCode change effect below
       });
       return cleanup;
     }
@@ -182,16 +182,16 @@ export function CloudAccountList() {
   // Auto-submit when authCode is set and dialog is open
   useEffect(() => {
     if (authCode && isAddDialogOpen && !addMutation.isPending) {
-      console.log('[OAuth] Auto-submitting auth code');
-      handleAddAccount(authCode);
+      console.log('[OAuth] Auto-submitting Google auth code');
+      submitAuthCode(authCode);
     }
-  }, [authCode, isAddDialogOpen]);
+  }, [addMutation.isPending, authCode, isAddDialogOpen, submitAuthCode]);
 
   // Batch Operations State
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    if (!isError || !errorUpdatedAt || errorUpdatedAt === lastCloudLoadErrorToastAt.current) {
+    if (!isError || !errorUpdatedAt || errorUpdatedAt === lastLoadErrorToastAtRef.current) {
       return;
     }
 
@@ -200,10 +200,8 @@ export function CloudAccountList() {
       description: getLocalizedErrorMessage(error, t),
       variant: 'destructive',
     });
-    lastCloudLoadErrorToastAt.current = errorUpdatedAt;
+    lastLoadErrorToastAtRef.current = errorUpdatedAt;
   }, [error, errorUpdatedAt, isError, t, toast]);
-
-  // ... (existing code: handleRefresh, handleSwitch, handleDelete)
 
   const handleRefresh = (id: string) => {
     refreshMutation.mutate(
@@ -312,7 +310,7 @@ export function CloudAccountList() {
     });
   };
 
-  const openAuthUrl = async () => {
+  const openGoogleAuthSignIn = async () => {
     try {
       await startAuthFlow();
     } catch (e) {
@@ -325,7 +323,7 @@ export function CloudAccountList() {
   };
 
   // Batch Selection Handlers
-  const toggleSelection = (id: string, selected: boolean) => {
+  const setSelectionState = (id: string, selected: boolean) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (selected) {
@@ -337,7 +335,7 @@ export function CloudAccountList() {
     });
   };
 
-  const toggleSelectAll = () => {
+  const toggleSelectAllAccounts = () => {
     if (selectedIds.size === accounts?.length) {
       setSelectedIds(new Set());
     } else {
@@ -345,25 +343,25 @@ export function CloudAccountList() {
     }
   };
 
-  const handleBatchRefresh = () => {
+  const refreshSelectedAccounts = () => {
     selectedIds.forEach((id) => {
       refreshMutation.mutate({ accountId: id });
     });
     toast({
       title: t('cloud.toast.quotaRefreshed'),
-      description: `triggered for ${selectedIds.size} accounts.`,
+      description: `Triggered for ${selectedIds.size} accounts.`,
     });
     setSelectedIds(new Set());
   };
 
-  const handleBatchDelete = () => {
+  const deleteSelectedAccounts = () => {
     if (confirm(t('cloud.batch.confirmDelete', { count: selectedIds.size }))) {
       selectedIds.forEach((id) => {
         deleteMutation.mutate({ accountId: id });
       });
       toast({
         title: t('cloud.toast.deleted'),
-        description: `${selectedIds.size} accounts deleted.`,
+        description: `Deleted ${selectedIds.size} accounts.`,
       });
       setSelectedIds(new Set());
     }
@@ -427,21 +425,21 @@ export function CloudAccountList() {
               <div className="text-base font-semibold text-rose-600">{rateLimitedAccounts}</div>
             </div>
             {/* Global Quota */}
-            {globalQuota !== null && (
+            {overallQuotaPercentage !== null && (
               <div className="bg-muted/50 rounded-md border px-3 py-2">
                 <div className="text-muted-foreground text-[11px] uppercase">
                   {t('cloud.globalQuota')}
                 </div>
                 <div className="flex items-center gap-2">
                   <span
-                    className={`text-base font-semibold ${getGlobalQuotaTextColor(globalQuota)}`}
+                    className={`text-base font-semibold ${GLOBAL_QUOTA_TEXT_COLOR_CLASS_BY_STATUS[effectiveQuotaStatus]}`}
                   >
-                    {globalQuota}%
+                    {overallQuotaPercentage}%
                   </span>
                   <div className="bg-muted h-2 w-20 overflow-hidden rounded-full">
                     <div
-                      className={`h-full rounded-full transition-all duration-300 ${getGlobalQuotaColor(globalQuota)}`}
-                      style={{ width: `${Math.max(0, Math.min(100, globalQuota))}%` }}
+                      className={`h-full rounded-full transition-all duration-300 ${GLOBAL_QUOTA_BAR_COLOR_CLASS_BY_STATUS[effectiveQuotaStatus]}`}
+                      style={{ width: `${clampQuotaPercentage(overallQuotaPercentage)}%` }}
                     />
                   </div>
                 </div>
@@ -471,7 +469,7 @@ export function CloudAccountList() {
 
         <Button
           variant="ghost"
-          onClick={toggleSelectAll}
+          onClick={toggleSelectAllAccounts}
           title={t('cloud.batch.selectAll')}
           className="cursor-pointer"
         >
@@ -517,7 +515,7 @@ export function CloudAccountList() {
             </DialogHeader>
             <div className="grid gap-4 py-4">
               <div className="grid grid-cols-4 items-center gap-4">
-                <Button variant="outline" className="col-span-4" onClick={openAuthUrl}>
+                <Button variant="outline" className="col-span-4" onClick={openGoogleAuthSignIn}>
                   <Cloud className="mr-2 h-4 w-4" />
                   {t('cloud.authDialog.openLogin')}
                 </Button>
@@ -535,7 +533,7 @@ export function CloudAccountList() {
             </div>
             <DialogFooter>
               <Button
-                onClick={() => handleAddAccount()}
+                onClick={() => submitAuthCode()}
                 disabled={addMutation.isPending || !authCode}
               >
                 {addMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
@@ -554,7 +552,7 @@ export function CloudAccountList() {
                   variant={gridLayout === 'auto' ? 'secondary' : 'ghost'}
                   size="icon"
                   className="h-7 w-7 cursor-pointer"
-                  onClick={() => setGridLayout('auto')}
+                  onClick={() => updateGridLayout('auto')}
                 >
                   <LayoutGrid className="h-3.5 w-3.5" />
                 </Button>
@@ -567,7 +565,7 @@ export function CloudAccountList() {
                   variant={gridLayout === '2-col' ? 'secondary' : 'ghost'}
                   size="icon"
                   className="h-7 w-7 cursor-pointer"
-                  onClick={() => setGridLayout('2-col')}
+                  onClick={() => updateGridLayout('2-col')}
                 >
                   <Columns2 className="h-3.5 w-3.5" />
                 </Button>
@@ -580,7 +578,7 @@ export function CloudAccountList() {
                   variant={gridLayout === '3-col' ? 'secondary' : 'ghost'}
                   size="icon"
                   className="h-7 w-7 cursor-pointer"
-                  onClick={() => setGridLayout('3-col')}
+                  onClick={() => updateGridLayout('3-col')}
                 >
                   <Columns3 className="h-3.5 w-3.5" />
                 </Button>
@@ -593,7 +591,7 @@ export function CloudAccountList() {
                   variant={gridLayout === 'list' ? 'secondary' : 'ghost'}
                   size="icon"
                   className="h-7 w-7 cursor-pointer"
-                  onClick={() => setGridLayout('list')}
+                  onClick={() => updateGridLayout('list')}
                 >
                   <List className="h-3.5 w-3.5" />
                 </Button>
@@ -614,7 +612,7 @@ export function CloudAccountList() {
             onSwitch={handleSwitch}
             onManageIdentity={handleManageIdentity}
             isSelected={selectedIds.has(account.id)}
-            onToggleSelection={toggleSelection}
+            onToggleSelection={setSelectionState}
             isRefreshing={
               refreshMutation.isPending && refreshMutation.variables?.accountId === account.id
             }
@@ -653,11 +651,11 @@ export function CloudAccountList() {
           </div>
 
           <div className="flex items-center gap-2">
-            <Button variant="secondary" size="sm" onClick={handleBatchRefresh}>
+            <Button variant="secondary" size="sm" onClick={refreshSelectedAccounts}>
               <RefreshCw className="mr-2 h-3 w-3" />
               {t('cloud.batch.refresh')}
             </Button>
-            <Button variant="destructive" size="sm" onClick={handleBatchDelete}>
+            <Button variant="destructive" size="sm" onClick={deleteSelectedAccounts}>
               <Trash2 className="mr-2 h-3 w-3" />
               {t('cloud.batch.delete')}
             </Button>

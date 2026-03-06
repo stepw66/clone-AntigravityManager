@@ -18,14 +18,25 @@ export interface CloudTokenData {
   upstream_proxy_url?: string;
 }
 
+export interface CloudQuotaModelInfo {
+  percentage: number;
+  resetTime: string;
+  display_name?: string;
+  supports_images?: boolean;
+  supports_thinking?: boolean;
+  thinking_budget?: number;
+  recommended?: boolean;
+  max_tokens?: number;
+  max_output_tokens?: number;
+  supported_mime_types?: Record<string, boolean>;
+}
+
 export interface CloudQuotaData {
-  models: Record<
-    string,
-    {
-      percentage: number;
-      resetTime: string;
-    }
-  >;
+  models: Record<string, CloudQuotaModelInfo>;
+  model_forwarding_rules?: Record<string, string>;
+  subscription_tier?: string;
+  is_forbidden?: boolean;
+  isForbidden?: boolean;
 }
 
 export interface CloudAccount {
@@ -57,14 +68,25 @@ export const CloudTokenDataSchema = z.object({
   upstream_proxy_url: z.string().optional(),
 });
 
+export const CloudQuotaModelInfoSchema = z.object({
+  percentage: z.number(),
+  resetTime: z.string(),
+  display_name: z.string().optional(),
+  supports_images: z.boolean().optional(),
+  supports_thinking: z.boolean().optional(),
+  thinking_budget: z.number().optional(),
+  recommended: z.boolean().optional(),
+  max_tokens: z.number().optional(),
+  max_output_tokens: z.number().optional(),
+  supported_mime_types: z.record(z.string(), z.boolean()).optional(),
+});
+
 export const CloudQuotaDataSchema = z.object({
-  models: z.record(
-    z.string(),
-    z.object({
-      percentage: z.number(),
-      resetTime: z.string(),
-    }),
-  ),
+  models: z.record(z.string(), CloudQuotaModelInfoSchema),
+  model_forwarding_rules: z.record(z.string(), z.string()).optional(),
+  subscription_tier: z.string().optional(),
+  is_forbidden: z.boolean().optional(),
+  isForbidden: z.boolean().optional(),
 });
 
 export const CloudAccountSchema = z.object({

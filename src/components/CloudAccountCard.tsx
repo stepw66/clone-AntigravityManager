@@ -1,4 +1,4 @@
-import { CloudAccount } from '@/types/cloudAccount';
+import { CloudAccount, CloudQuotaModelInfo } from '@/types/cloudAccount';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -19,17 +19,109 @@ import {
 import { Checkbox } from '@/components/ui/checkbox';
 
 import { MoreVertical, Trash, RefreshCw, Box, Power, Fingerprint } from 'lucide-react';
-import { formatDistanceToNow, differenceInMinutes, differenceInHours, isBefore } from 'date-fns';
+import { formatDistanceToNow } from 'date-fns';
 import { Badge } from '@/components/ui/badge';
 import { useTranslation } from 'react-i18next';
 import { useAppConfig } from '@/hooks/useAppConfig';
 import { useProviderGrouping } from '@/hooks/useProviderGrouping';
 import { ProviderGroup } from '@/components/ProviderGroup';
+import {
+  clampQuotaPercentage,
+  formatResetTimeLabel,
+  formatResetTimeTitle,
+  getQuotaStatus,
+  type QuotaStatus,
+} from '@/utils/quota-display';
 
-interface ModelQuotaInfo {
-  percentage: number;
-  resetTime: string;
+type ModelQuotaEntry = [string, CloudQuotaModelInfo];
+
+const GEMINI_LEGACY_MODEL_PATTERN = /gemini-[12](\.|$|-)/i;
+const GEMINI_PRO_COMBINED_MODEL_ID = 'gemini-3.1-pro-low/high';
+
+const MODEL_DISPLAY_REPLACEMENTS: Array<[string, string]> = [
+  [GEMINI_PRO_COMBINED_MODEL_ID, 'Gemini 3.1 Pro (Low/High)'],
+  ['gemini-3.1-pro-preview', 'Gemini 3.1 Pro Preview'],
+  ['gemini-3-pro-image', 'Gemini 3 Pro Image'],
+  ['gemini-3.1-pro', 'Gemini 3.1 Pro'],
+  ['gemini-3-pro', 'Gemini 3 Pro'],
+  ['gemini-3-flash', 'Gemini 3 Flash'],
+  ['claude-sonnet-4-6-thinking', 'Claude 4.6 Sonnet (Thinking)'],
+  ['claude-sonnet-4-6', 'Claude 4.6 Sonnet'],
+  ['claude-sonnet-4-5-thinking', 'Claude 4.5 Sonnet (Thinking)'],
+  ['claude-sonnet-4-5', 'Claude 4.5 Sonnet'],
+  ['claude-opus-4-6-thinking', 'Claude 4.6 Opus (Thinking)'],
+  ['claude-opus-4-5-thinking', 'Claude 4.5 Opus (Thinking)'],
+  ['claude-3-5-sonnet', 'Claude 3.5 Sonnet'],
+];
+
+const QUOTA_TEXT_COLOR_CLASS_BY_STATUS: Record<QuotaStatus, string> = {
+  high: 'text-green-500',
+  medium: 'text-yellow-500',
+  low: 'text-red-500',
+};
+
+const QUOTA_BAR_COLOR_CLASS_BY_STATUS: Record<QuotaStatus, string> = {
+  high: 'bg-emerald-500',
+  medium: 'bg-amber-500',
+  low: 'bg-rose-500',
+};
+
+function isGeminiProLowModel(modelName: string): boolean {
+  const normalizedModelName = modelName.toLowerCase();
+  return normalizedModelName.includes('gemini-3.1-pro-low');
 }
+
+function isGeminiProHighModel(modelName: string): boolean {
+  const normalizedModelName = modelName.toLowerCase();
+  return normalizedModelName.includes('gemini-3.1-pro-high');
+}
+
+function isGeminiProFamilyModel(modelName: string): boolean {
+  const normalizedModelName = modelName.toLowerCase();
+  return normalizedModelName.includes('gemini-3.1-pro');
+}
+
+function mergeGeminiProQuotaEntries(entries: ModelQuotaEntry[]): Record<string, CloudQuotaModelInfo> {
+  const mergedModels: Record<string, CloudQuotaModelInfo> = {};
+  const hasProLowModel = entries.some(([modelName]) => isGeminiProLowModel(modelName));
+  const hasProHighModel = entries.some(([modelName]) => isGeminiProHighModel(modelName));
+  const proLowModelInfo = entries.find(([modelName]) => isGeminiProLowModel(modelName))?.[1];
+
+  for (const [modelName, modelInfo] of entries) {
+    if (isGeminiProLowModel(modelName) && hasProHighModel) {
+      continue;
+    }
+
+    if (isGeminiProHighModel(modelName) && hasProLowModel) {
+      const mergedPercentage = proLowModelInfo
+        ? Math.min(modelInfo.percentage, proLowModelInfo.percentage)
+        : modelInfo.percentage;
+      mergedModels[GEMINI_PRO_COMBINED_MODEL_ID] = {
+        ...modelInfo,
+        percentage: mergedPercentage,
+      };
+      continue;
+    }
+
+    mergedModels[modelName] = modelInfo;
+  }
+
+  return mergedModels;
+}
+
+function formatModelDisplayName(modelName: string): string {
+  let displayName = modelName.replace('models/', '');
+  for (const [source, target] of MODEL_DISPLAY_REPLACEMENTS) {
+    displayName = displayName.replace(source, target);
+  }
+
+  return displayName
+    .replace(/-/g, ' ')
+    .split(' ')
+    .map((word) => (word.length > 2 ? word.charAt(0).toUpperCase() + word.slice(1) : word))
+    .join(' ');
+}
+
 interface CloudAccountCardProps {
   account: CloudAccount;
   onRefresh: (id: string) => void;
@@ -64,114 +156,54 @@ export function CloudAccountCard({
     toggleProviderCollapse,
   } = useProviderGrouping();
 
-  // Helpers to get quota color
-  const getQuotaColor = (percentage: number) => {
-    if (percentage > 80) return 'text-green-500';
-    if (percentage > 20) return 'text-yellow-500';
-    return 'text-red-500';
+  const getQuotaTextColorClass = (percentage: number) => {
+    const quotaStatus = getQuotaStatus(percentage);
+    return QUOTA_TEXT_COLOR_CLASS_BY_STATUS[quotaStatus];
   };
 
-  const getQuotaBarColor = (percentage: number) => {
-    if (percentage > 80) return 'bg-emerald-500';
-    if (percentage > 20) return 'bg-amber-500';
-    return 'bg-rose-500';
+  const getQuotaBarColorClass = (percentage: number) => {
+    const quotaStatus = getQuotaStatus(percentage);
+    return QUOTA_BAR_COLOR_CLASS_BY_STATUS[quotaStatus];
   };
 
-  const getQuotaLabel = (percentage: number) => {
+  const formatQuotaLabel = (percentage: number) => {
     if (percentage === 0) {
       return t('cloud.card.rateLimitedQuota');
     }
     return `${percentage}%`;
   };
 
-  const formatTimeRemaining = (dateStr: string) => {
-    const targetDate = new Date(dateStr);
-    if (Number.isNaN(targetDate.getTime())) return null;
-
-    const now = new Date();
-    if (isBefore(targetDate, now)) return '0h 0m';
-
-    const diffHrs = Math.max(0, differenceInHours(targetDate, now));
-    const diffMins = Math.max(0, differenceInMinutes(targetDate, now) - diffHrs * 60);
-    if (diffHrs >= 24) {
-      const diffDays = Math.floor(diffHrs / 24);
-      const remainingHrs = diffHrs % 24;
-      return `${diffDays}d ${remainingHrs}h`;
-    }
-    return `${diffHrs}h ${diffMins}m`;
+  const formatResetTimeLabelText = (resetTime?: string) => {
+    return formatResetTimeLabel(resetTime, {
+      prefix: t('cloud.card.resetPrefix'),
+      unknown: t('cloud.card.resetUnknown'),
+    });
   };
 
-  const getResetTimeLabel = (resetTime?: string) => {
-    if (!resetTime) return t('cloud.card.resetUnknown');
-    const remaining = formatTimeRemaining(resetTime);
-    if (!remaining) return t('cloud.card.resetUnknown');
-    return `${t('cloud.card.resetPrefix')}: ${remaining}`;
+  const formatResetTimeTitleText = (resetTime?: string) => {
+    return formatResetTimeTitle(resetTime, t('cloud.card.resetTime'));
   };
 
-  const getResetTimeTitle = (resetTime?: string) => {
-    if (!resetTime) return undefined;
-    const resetDate = new Date(resetTime);
-    if (Number.isNaN(resetDate.getTime())) return undefined;
-    return `${t('cloud.card.resetTime')}: ${resetDate.toLocaleString()}`;
-  };
-
-  // --- Logic for model groups ---
-  const rawModels = Object.entries(account.quota?.models || {}).filter(
+  const visibleModelEntries = Object.entries(account.quota?.models || {}).filter(
     ([modelName]) => config?.model_visibility?.[modelName] !== false,
-  );
+  ) as ModelQuotaEntry[];
 
-  // Group Gemini 3 Pro Low/High if both exist
-  const processedModels: Record<string, ModelQuotaInfo> = {};
-  const hasLow = rawModels.some(([name]) => name.includes('gemini-3-pro-low'));
-  const hasHigh = rawModels.some(([name]) => name.includes('gemini-3-pro-high'));
+  const mergedModelQuotas = mergeGeminiProQuotaEntries(visibleModelEntries);
 
-  for (const [name, info] of rawModels) {
-    if (name.includes('gemini-3-pro-low') && hasHigh) continue;
-    if (name.includes('gemini-3-pro-high') && hasLow) {
-      // Use the lower percentage if both exist, to be safe
-      const lowInfo = rawModels.find(([n]) => n.includes('gemini-3-pro-low'))?.[1];
-      const mergedPercentage = lowInfo
-        ? Math.min(info.percentage, lowInfo.percentage)
-        : info.percentage;
-      processedModels['gemini-3-pro-low/high'] = { ...info, percentage: mergedPercentage };
-      continue;
-    }
-    processedModels[name] = info;
-  }
-
-  const geminiModels = Object.entries(processedModels)
-    .filter(([name]) => name.includes('gemini') && !/gemini-[12](\.|$|-)/i.test(name))
+  const geminiModels = Object.entries(mergedModelQuotas)
+    .filter(([name]) => name.includes('gemini') && !GEMINI_LEGACY_MODEL_PATTERN.test(name))
     .sort((a, b) => b[1].percentage - a[1].percentage);
 
-  const claudeModels = Object.entries(processedModels)
+  const claudeModels = Object.entries(mergedModelQuotas)
     .filter(([name]) => name.includes('claude'))
     .sort((a, b) => b[1].percentage - a[1].percentage);
 
   const hasHighTier = geminiModels.some(
-    ([name, info]) => name.includes('gemini-3-pro') && info.percentage > 50,
+    ([name, info]) => isGeminiProFamilyModel(name) && info.percentage > 50,
   );
-  const hasRenderableModels = geminiModels.length > 0 || claudeModels.length > 0;
+  const hasVisibleQuotaModels = geminiModels.length > 0 || claudeModels.length > 0;
 
-  const formatModelName = (name: string) => {
-    return name
-      .replace('models/', '')
-      .replace('gemini-3-pro-low/high', 'Gemini 3 Pro (Low/High)')
-      .replace('gemini-3-pro-preview', 'Gemini 3 Pro Preview')
-      .replace('gemini-3-pro-image', 'Gemini 3 Pro Image')
-      .replace('gemini-3-pro', 'Gemini 3 Pro')
-      .replace('gemini-3-flash', 'Gemini 3 Flash')
-      .replace('claude-sonnet-4-5-thinking', 'Claude 4.5 Sonnet (Thinking)')
-      .replace('claude-sonnet-4-5', 'Claude 4.5 Sonnet')
-      .replace('claude-opus-4-6-thinking', 'Claude 4.6 Opus (Thinking)')
-      .replace('claude-opus-4-5-thinking', 'Claude 4.5 Opus (Thinking)')
-      .replace('claude-3-5-sonnet', 'Claude 3.5 Sonnet')
-      .replace(/-/g, ' ')
-      .split(' ')
-      .map((word) => (word.length > 2 ? word.charAt(0).toUpperCase() + word.slice(1) : word))
-      .join(' ');
-  };
-
-  const renderModelGroup = (title: string, models: [string, ModelQuotaInfo][]) => {
+  const renderQuotaModelGroup = (title: string, models: ModelQuotaEntry[]) => {
     if (models.length === 0) return null;
     return (
       <div key={title} className="space-y-1">
@@ -190,25 +222,25 @@ export function CloudAccountCard({
               className="text-muted-foreground group-hover/item:text-foreground min-w-0 truncate font-semibold"
               title={modelName}
             >
-              {formatModelName(modelName)}
+              {formatModelDisplayName(modelName)}
             </span>
             <div className="flex flex-col items-end gap-0.5">
               <span
                 className="text-muted-foreground text-[9px] leading-none opacity-80"
-                title={getResetTimeTitle(info.resetTime)}
+                title={formatResetTimeTitleText(info.resetTime)}
               >
-                {getResetTimeLabel(info.resetTime)}
+                {formatResetTimeLabelText(info.resetTime)}
               </span>
               <div className="flex items-baseline gap-1">
                 <span
-                  className={`font-mono text-xs leading-none font-bold ${getQuotaColor(info.percentage)}`}
+                  className={`font-mono text-xs leading-none font-bold ${getQuotaTextColorClass(info.percentage)}`}
                 >
                   {info.percentage}%
                 </span>
                 <div className="bg-muted h-1 w-16 overflow-hidden rounded-full">
                   <div
-                    className={`h-full rounded-full transition-all duration-300 ${getQuotaBarColor(info.percentage)}`}
-                    style={{ width: `${Math.max(0, Math.min(100, info.percentage))}%` }}
+                    className={`h-full rounded-full transition-all duration-300 ${getQuotaBarColorClass(info.percentage)}`}
+                    style={{ width: `${clampQuotaPercentage(info.percentage)}%` }}
                   />
                 </div>
               </div>
@@ -218,6 +250,52 @@ export function CloudAccountCard({
       </div>
     );
   };
+
+  const emptyQuotaState = (
+    <div className="text-muted-foreground flex flex-col items-center justify-center py-4">
+      <Box className="mb-2 h-8 w-8 opacity-20" />
+      <span className="text-xs">{t('cloud.card.noQuota')}</span>
+    </div>
+  );
+
+  const providerStats = providerGroupingsEnabled ? getAccountStats(account) : null;
+  const providerGroupedQuotaSection =
+    providerStats && providerStats.visibleModels > 0 ? (
+      <>
+        <div className="bg-muted/40 flex items-center justify-between rounded-lg px-3 py-1.5 text-xs">
+          <span className="font-medium">{t('settings.providerGroupings.overall')}</span>
+          <div className="flex items-center gap-2">
+            <span className={`font-mono font-bold ${getQuotaTextColorClass(providerStats.overallPercentage)}`}>
+              {formatQuotaLabel(providerStats.overallPercentage)}
+            </span>
+            <div className="bg-muted h-1.5 w-16 overflow-hidden rounded-full">
+              <div
+                className={`h-full rounded-full transition-all duration-300 ${getQuotaBarColorClass(providerStats.overallPercentage)}`}
+                style={{
+                  width: `${clampQuotaPercentage(providerStats.overallPercentage)}%`,
+                }}
+              />
+            </div>
+          </div>
+        </div>
+        {providerStats.providers.map((statsByProvider) => (
+          <ProviderGroup
+            key={statsByProvider.providerKey}
+            stats={statsByProvider}
+            isCollapsed={isProviderCollapsed(account.id, statsByProvider.providerKey)}
+            onToggleCollapse={() => toggleProviderCollapse(account.id, statsByProvider.providerKey)}
+            getQuotaTextColorClass={getQuotaTextColorClass}
+            getQuotaBarColorClass={getQuotaBarColorClass}
+            formatQuotaLabel={formatQuotaLabel}
+            formatResetTimeLabel={formatResetTimeLabelText}
+            formatResetTimeTitle={formatResetTimeTitleText}
+            leftLabel={t('cloud.card.left')}
+          />
+        ))}
+      </>
+    ) : (
+      emptyQuotaState
+    );
 
   return (
     <Card
@@ -344,66 +422,15 @@ export function CloudAccountCard({
 
         <div className="space-y-2">
           {providerGroupingsEnabled ? (
-            (() => {
-              const accountStats = getAccountStats(account);
-              if (accountStats.visibleModels === 0) {
-                return (
-                  <div className="text-muted-foreground flex flex-col items-center justify-center py-4">
-                    <Box className="mb-2 h-8 w-8 opacity-20" />
-                    <span className="text-xs">{t('cloud.card.noQuota')}</span>
-                  </div>
-                );
-              }
-              return (
-                <>
-                  <div className="bg-muted/40 flex items-center justify-between rounded-lg px-3 py-1.5 text-xs">
-                    <span className="font-medium">{t('settings.providerGroupings.overall')}</span>
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`font-mono font-bold ${getQuotaColor(accountStats.overallPercentage)}`}
-                      >
-                        {getQuotaLabel(accountStats.overallPercentage)}
-                      </span>
-                      <div className="bg-muted h-1.5 w-16 overflow-hidden rounded-full">
-                        <div
-                          className={`h-full rounded-full transition-all duration-300 ${getQuotaBarColor(accountStats.overallPercentage)}`}
-                          style={{
-                            width: `${Math.max(0, Math.min(100, accountStats.overallPercentage))}%`,
-                          }}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                  {accountStats.providers.map((providerStats) => (
-                    <ProviderGroup
-                      key={providerStats.providerKey}
-                      stats={providerStats}
-                      isCollapsed={isProviderCollapsed(account.id, providerStats.providerKey)}
-                      onToggleCollapse={() =>
-                        toggleProviderCollapse(account.id, providerStats.providerKey)
-                      }
-                      getQuotaColor={getQuotaColor}
-                      getQuotaBarColor={getQuotaBarColor}
-                      getQuotaLabel={getQuotaLabel}
-                      getResetTimeLabel={getResetTimeLabel}
-                      getResetTimeTitle={getResetTimeTitle}
-                      leftLabel={t('cloud.card.left')}
-                    />
-                  ))}
-                </>
-              );
-            })()
-          ) : hasRenderableModels ? (
+            providerGroupedQuotaSection
+          ) : hasVisibleQuotaModels ? (
             <div className="space-y-3">
-              {renderModelGroup(t('cloud.card.groupGoogleGemini'), geminiModels)}
+              {renderQuotaModelGroup(t('cloud.card.groupGoogleGemini'), geminiModels)}
               <div className="pt-1" />
-              {renderModelGroup(t('cloud.card.groupAnthropicClaude'), claudeModels)}
+              {renderQuotaModelGroup(t('cloud.card.groupAnthropicClaude'), claudeModels)}
             </div>
           ) : (
-            <div className="text-muted-foreground flex flex-col items-center justify-center py-4">
-              <Box className="mb-2 h-8 w-8 opacity-20" />
-              <span className="text-xs">{t('cloud.card.noQuota')}</span>
-            </div>
+            emptyQuotaState
           )}
         </div>
       </CardContent>

@@ -6,7 +6,7 @@ import { createFileRoute } from '@tanstack/react-router';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { ipc } from '@/ipc/manager';
-import { useState, useEffect } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useAppConfig } from '@/hooks/useAppConfig';
 import { ProxyConfig } from '@/types/config';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -42,6 +42,59 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+
+type ProxyProtocol = 'openai' | 'anthropic';
+
+interface ExampleModel {
+  id: string;
+  name: string;
+  icon: ReactNode;
+}
+
+const EXAMPLE_MODELS: ExampleModel[] = [
+  { id: 'gemini-3-flash', name: 'Gemini 3 Flash', icon: <Zap size={14} /> },
+  { id: 'gemini-3.1-pro-low', name: 'Gemini 3.1 Pro (Low)', icon: <Cpu size={14} /> },
+  { id: 'gemini-3.1-pro-high', name: 'Gemini 3.1 Pro (High)', icon: <Cpu size={14} /> },
+  {
+    id: 'claude-sonnet-4-6-thinking',
+    name: 'Claude Sonnet 4.6 (Thinking)',
+    icon: <Sparkles size={14} />,
+  },
+  {
+    id: 'claude-opus-4-6-thinking',
+    name: 'Claude Opus 4.6 (Thinking)',
+    icon: <BrainCircuit size={14} />,
+  },
+];
+
+const ANTHROPIC_ROUTE_OPTIONS = [
+  'claude-sonnet-4-6-thinking',
+  'claude-opus-4-6-thinking',
+  'gemini-3-flash',
+  'gemini-3.1-pro-low',
+  'gemini-3.1-pro-high',
+] as const;
+
+const DEFAULT_ANTHROPIC_MAPPING: Record<string, string> = {
+  'claude-sonnet-4-6-20260219': 'claude-sonnet-4-6-thinking',
+  'claude-sonnet-4-5-20250929': 'claude-sonnet-4-6-thinking',
+  'claude-opus-4-6-20260201': 'claude-opus-4-6-thinking',
+  opus: 'claude-opus-4-6-thinking',
+};
+
+function resolveAnthropicMappingValue(
+  anthropicMapping: Record<string, string>,
+  keys: string[],
+  fallback: string,
+): string {
+  for (const key of keys) {
+    const value = anthropicMapping[key];
+    if (value) {
+      return value;
+    }
+  }
+  return fallback;
+}
 
 function ProxyPage() {
   const { t } = useTranslation();
@@ -97,14 +150,14 @@ function ProxyPage() {
           } else {
             setProxyConfig(config.proxy);
           }
-        } catch (e) {
+        } catch {
           // If status check fails, just use config value
           setProxyConfig(config.proxy);
         }
       };
       syncServerStatus();
     }
-  }, [config]);
+  }, [config, saveConfig]);
 
   // Helper to update proxyConfig and auto-save
   const updateProxyConfig = async (newProxyConfig: ProxyConfig) => {
@@ -115,23 +168,26 @@ function ProxyPage() {
   };
 
   // ===== Usage Examples State =====
-  const [selectedProtocol, setSelectedProtocol] = useState<'openai' | 'anthropic'>('openai');
-  const [activeModelTab, setActiveModelTab] = useState('gemini-2.5-flash');
+  const [selectedProtocol, setSelectedProtocol] = useState<ProxyProtocol>('openai');
+  const [activeModelTab, setActiveModelTab] = useState('gemini-3.1-pro-high');
   const [copied, setCopied] = useState<string | null>(null);
-
-  // Models list for examples
-  const models = [
-    { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', icon: <Zap size={14} /> },
-    { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', icon: <Cpu size={14} /> },
-    { id: 'gemini-3-flash', name: 'Gemini 3 Flash', icon: <Zap size={14} /> },
-    { id: 'gemini-3-pro-high', name: 'Gemini 3 Pro (High)', icon: <Cpu size={14} /> },
-    { id: 'claude-sonnet-4-5-thinking', name: 'Claude Sonnet 4.5', icon: <Sparkles size={14} /> },
-    { id: 'claude-opus-4-5-thinking', name: 'Claude Opus 4.5', icon: <BrainCircuit size={14} /> },
-  ];
 
   // Computed values for examples
   const apiKey = proxyConfig?.api_key || 'YOUR_API_KEY';
   const baseUrl = `http://localhost:${proxyConfig?.port || 8045}`;
+
+  const updateAnthropicMapping = (mappingPatch: Record<string, string>) => {
+    if (!proxyConfig) {
+      return;
+    }
+    updateProxyConfig({
+      ...proxyConfig,
+      anthropic_mapping: {
+        ...proxyConfig.anthropic_mapping,
+        ...mappingPatch,
+      },
+    });
+  };
 
   const copyToClipboard = (text: string, type: string) => {
     navigator.clipboard.writeText(text);
@@ -415,30 +471,28 @@ print(response.choices[0].message.content)`;
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-            {/* Sonnet 4.5 Card */}
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            {/* Sonnet 4.6 Card */}
             <div className="flex flex-col rounded-lg border-2 border-blue-200 bg-gradient-to-br from-blue-50 to-blue-100/50 p-4 dark:border-blue-800/50 dark:from-blue-950/30 dark:to-blue-900/20">
               <div className="mb-2 flex items-center gap-2">
                 <div className="h-2 w-2 animate-pulse rounded-full bg-blue-500"></div>
                 <h3 className="text-sm font-bold text-gray-900 dark:text-gray-100">
-                  Claude Sonnet 4.5
+                  Claude Sonnet 4.6 (Thinking)
                 </h3>
               </div>
               <p className="mb-3 text-xs text-gray-600 dark:text-gray-400">
                 {t('proxy.mapping.maps_to', 'Maps to')}
               </p>
               <Select
-                value={
-                  proxyConfig.anthropic_mapping['claude-sonnet-4-5-20250929'] ||
-                  'claude-sonnet-4-5-thinking'
-                }
+                value={resolveAnthropicMappingValue(
+                  proxyConfig.anthropic_mapping,
+                  ['claude-sonnet-4-6-20260219', 'claude-sonnet-4-5-20250929'],
+                  'claude-sonnet-4-6-thinking',
+                )}
                 onValueChange={(value) =>
-                  updateProxyConfig({
-                    ...proxyConfig,
-                    anthropic_mapping: {
-                      ...proxyConfig.anthropic_mapping,
-                      'claude-sonnet-4-5-20250929': value,
-                    },
+                  updateAnthropicMapping({
+                    'claude-sonnet-4-6-20260219': value,
+                    'claude-sonnet-4-5-20250929': value,
                   })
                 }
               >
@@ -446,34 +500,36 @@ print(response.choices[0].message.content)`;
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="claude-sonnet-4-5-thinking">
-                    claude-sonnet-4-5-thinking
-                  </SelectItem>
-                  <SelectItem value="gemini-2.5-flash">gemini-2.5-flash</SelectItem>
-                  <SelectItem value="gemini-2.5-pro">gemini-2.5-pro</SelectItem>
-                  <SelectItem value="gemini-3-flash">gemini-3-flash</SelectItem>
-                  <SelectItem value="gemini-3-pro-high">gemini-3-pro-high</SelectItem>
+                  {ANTHROPIC_ROUTE_OPTIONS.map((option) => (
+                    <SelectItem key={option} value={option}>
+                      {option}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
 
-            {/* Opus 4.5 Card */}
+            {/* Opus 4.6 Card */}
             <div className="flex flex-col rounded-lg border-2 border-purple-200 bg-gradient-to-br from-purple-50 to-purple-100/50 p-4 dark:border-purple-800/50 dark:from-purple-950/30 dark:to-purple-900/20">
               <div className="mb-2 flex items-center gap-2">
                 <div className="h-2 w-2 animate-pulse rounded-full bg-purple-500"></div>
                 <h3 className="text-sm font-bold text-gray-900 dark:text-gray-100">
-                  Claude Opus 4.5
+                  Claude Opus 4.6 (Thinking)
                 </h3>
               </div>
               <p className="mb-3 text-xs text-gray-600 dark:text-gray-400">
                 {t('proxy.mapping.maps_to', 'Maps to')}
               </p>
               <Select
-                value={proxyConfig.anthropic_mapping['opus'] || 'claude-opus-4-5-thinking'}
+                value={resolveAnthropicMappingValue(
+                  proxyConfig.anthropic_mapping,
+                  ['claude-opus-4-6-20260201', 'opus'],
+                  'claude-opus-4-6-thinking',
+                )}
                 onValueChange={(value) =>
-                  updateProxyConfig({
-                    ...proxyConfig,
-                    anthropic_mapping: { ...proxyConfig.anthropic_mapping, opus: value },
+                  updateAnthropicMapping({
+                    'claude-opus-4-6-20260201': value,
+                    opus: value,
                   })
                 }
               >
@@ -481,45 +537,11 @@ print(response.choices[0].message.content)`;
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="claude-opus-4-5-thinking">claude-opus-4-5-thinking</SelectItem>
-                  <SelectItem value="gemini-2.5-pro">gemini-2.5-pro</SelectItem>
-                  <SelectItem value="gemini-3-pro-high">gemini-3-pro-high</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            {/* Haiku 4.5 Card */}
-            <div className="flex flex-col rounded-lg border-2 border-green-200 bg-gradient-to-br from-green-50 to-green-100/50 p-4 dark:border-green-800/50 dark:from-green-950/30 dark:to-green-900/20">
-              <div className="mb-2 flex items-center gap-2">
-                <div className="h-2 w-2 animate-pulse rounded-full bg-green-500"></div>
-                <h3 className="text-sm font-bold text-gray-900 dark:text-gray-100">
-                  Claude Haiku 4.5
-                </h3>
-              </div>
-              <p className="mb-3 text-xs text-gray-600 dark:text-gray-400">
-                {t('proxy.mapping.maps_to', 'Maps to')}
-              </p>
-              <Select
-                value={
-                  proxyConfig.anthropic_mapping['claude-haiku-4-5-20251001'] || 'gemini-2.5-flash'
-                }
-                onValueChange={(value) =>
-                  updateProxyConfig({
-                    ...proxyConfig,
-                    anthropic_mapping: {
-                      ...proxyConfig.anthropic_mapping,
-                      'claude-haiku-4-5-20251001': value,
-                    },
-                  })
-                }
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="gemini-2.5-flash">gemini-2.5-flash</SelectItem>
-                  <SelectItem value="gemini-2.5-flash-lite">gemini-2.5-flash-lite</SelectItem>
-                  <SelectItem value="gemini-3-flash">gemini-3-flash</SelectItem>
+                  {ANTHROPIC_ROUTE_OPTIONS.map((option) => (
+                    <SelectItem key={option} value={option}>
+                      {option}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -532,11 +554,7 @@ print(response.choices[0].message.content)`;
               onClick={() =>
                 updateProxyConfig({
                   ...proxyConfig,
-                  anthropic_mapping: {
-                    'claude-sonnet-4-5-20250929': 'claude-sonnet-4-5-thinking',
-                    opus: 'claude-opus-4-5-thinking',
-                    'claude-haiku-4-5-20251001': 'gemini-2.5-flash',
-                  },
+                  anthropic_mapping: { ...DEFAULT_ANTHROPIC_MAPPING },
                 })
               }
             >
@@ -607,7 +625,7 @@ print(response.choices[0].message.content)`;
 
           {/* Model Tabs */}
           <div className="flex flex-wrap gap-1 border-b border-gray-200 dark:border-gray-700">
-            {models.map((model) => (
+            {EXAMPLE_MODELS.map((model) => (
               <button
                 key={model.id}
                 onClick={() => setActiveModelTab(model.id)}
