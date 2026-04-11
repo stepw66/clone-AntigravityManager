@@ -2,7 +2,7 @@ import { ipc } from '@/ipc/manager';
 import type { DeviceProfile } from '@/types/account';
 import { isValidProxyUrl } from '@/utils/url';
 
-export function addGoogleAccount(input: { authCode: string }) {
+export function addGoogleAccount(input: { authCode: string; oauthClientKey?: string }) {
   return ipc.client.cloud.addGoogleAccount(input);
 }
 
@@ -39,8 +39,29 @@ export function syncLocalAccount() {
   return ipc.client.cloud.syncLocalAccount();
 }
 
-export function startAuthFlow() {
-  return ipc.client.cloud.startAuthFlow();
+export interface OAuthClientDescriptor {
+  key: string;
+  label: string;
+  client_id: string;
+  is_active: boolean;
+  is_builtin: boolean;
+}
+
+export function startAuthFlow(input?: { oauthClientKey?: string }) {
+  return ipc.client.cloud.startAuthFlow(input);
+}
+
+export function listOAuthClients() {
+  return ipc.client.cloud.listOAuthClients() as Promise<OAuthClientDescriptor[]>;
+}
+
+export async function getActiveOAuthClient() {
+  const response = await ipc.client.cloud.getActiveOAuthClient();
+  return response.client_key;
+}
+
+export function setActiveOAuthClient(input: { clientKey: string }) {
+  return ipc.client.cloud.setActiveOAuthClient(input);
 }
 
 export function getSwitchStatus() {
