@@ -4,6 +4,7 @@ import type { MessageBoxOptions } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import squirrelStartup from 'electron-squirrel-startup';
+import { EnvHttpProxyAgent, setGlobalDispatcher } from 'undici';
 
 import { ipcMain } from 'electron/main';
 import { ipcContext } from '@/ipc/context';
@@ -57,6 +58,41 @@ if (squirrelStartup) {
 }
 
 const inDevelopment = process.env.NODE_ENV === 'development';
+const debugHttpProxy = process.env.http_proxy?.trim() || process.env.HTTP_PROXY?.trim();
+const debugHttpsProxy = process.env.https_proxy?.trim() || process.env.HTTPS_PROXY?.trim();
+const debugNoProxy = process.env.no_proxy?.trim() || process.env.NO_PROXY?.trim();
+const debugProxyServer =
+  process.env.ELECTRON_PROXY_SERVER?.trim() || debugHttpsProxy || debugHttpProxy;
+const debugProxyBypassList =
+  process.env.ELECTRON_PROXY_BYPASS_LIST?.trim() || '<local>;localhost;127.0.0.1;::1';
+
+function configureDebugProxy() {
+  if (debugHttpProxy || debugHttpsProxy) {
+    setGlobalDispatcher(
+      new EnvHttpProxyAgent({
+        httpProxy: debugHttpProxy,
+        httpsProxy: debugHttpsProxy,
+        noProxy: debugNoProxy,
+      }),
+    );
+    logger.info(
+      `[Debug Proxy] Node fetch proxy enabled (http: ${debugHttpProxy ?? 'none'}, https: ${debugHttpsProxy ?? 'none'}, no_proxy: ${debugNoProxy ?? 'none'})`,
+    );
+  }
+
+  if (!debugProxyServer) {
+    return;
+  }
+
+  // Route Chromium traffic through the local debug proxy while keeping local dev servers direct.
+  app.commandLine.appendSwitch('proxy-server', debugProxyServer);
+  app.commandLine.appendSwitch('proxy-bypass-list', debugProxyBypassList);
+  logger.info(
+    `[Debug Proxy] Electron proxy enabled: ${debugProxyServer} (bypass: ${debugProxyBypassList})`,
+  );
+}
+
+configureDebugProxy();
 
 // Keep a global reference of the window object, if you don't, the window will
 // be closed automatically when the JavaScript object is garbage collected.
