@@ -8,6 +8,8 @@ import {
   useSetAutoSwitchEnabled,
   useForcePollCloudMonitor,
   useSyncLocalAccount,
+  useOAuthClients,
+  useSetActiveOAuthClient,
   startAuthFlow,
   useExportCloudAccounts,
   useImportCloudAccounts,
@@ -77,6 +79,7 @@ import {
   getAccountSortValue,
   type QuotaStatus,
 } from '@/utils/quota-display';
+import { shouldAutoSubmitGoogleAuthCode } from '@/utils/googleAuthSubmission';
 
 export type GridLayout = 'auto' | '2-col' | '3-col' | 'list' | 'compact';
 
@@ -113,9 +116,12 @@ export function CloudAccountList() {
   const { data: autoSwitchEnabled, isLoading: isSettingsLoading } = useAutoSwitchEnabled();
   const setAutoSwitchMutation = useSetAutoSwitchEnabled();
   const forcePollMutation = useForcePollCloudMonitor();
+  const { data: oauthClients = [], isLoading: isOAuthClientsLoading } = useOAuthClients();
+  const setActiveOAuthClientMutation = useSetActiveOAuthClient();
 
   const { toast } = useToast();
   const lastLoadErrorToastAtRef = useRef<number>(0);
+  const lastSubmittedAuthCodeRef = useRef<string | null>(null);
 
   const gridLayout: GridLayout = (config?.grid_layout as GridLayout) || 'auto';
 
@@ -195,6 +201,7 @@ export function CloudAccountList() {
 
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [authCode, setAuthCode] = useState('');
+  const [selectedOAuthClientKey, setSelectedOAuthClientKey] = useState('');
   const [identityAccount, setIdentityAccount] = useState<CloudAccount | null>(null);
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
   const [isImportDialogOpen, setIsImportDialogOpen] = useState(false);
@@ -219,12 +226,18 @@ export function CloudAccountList() {
       if (!codeToUse) {
         return;
       }
+      lastSubmittedAuthCodeRef.current = codeToUse;
       addMutation.mutate(
-        { authCode: codeToUse },
+        {
+          authCode: codeToUse,
+          oauthClientKey:
+            selectedOAuthClientKey || oauthClients.find((client) => client.is_active)?.key,
+        },
         {
           onSuccess: () => {
             setIsAddDialogOpen(false);
             setAuthCode('');
+            lastSubmittedAuthCodeRef.current = null;
             toast({ title: t('cloud.toast.addSuccess') });
           },
           onError: (err) => {
@@ -237,14 +250,25 @@ export function CloudAccountList() {
         },
       );
     },
-    [addMutation, authCode, t, toast],
+    [addMutation, authCode, oauthClients, selectedOAuthClientKey, t, toast],
   );
+
+  useEffect(() => {
+    if (selectedOAuthClientKey !== '') {
+      return;
+    }
+    const activeClientKey = oauthClients.find((client) => client.is_active)?.key;
+    if (activeClientKey) {
+      setSelectedOAuthClientKey(activeClientKey);
+    }
+  }, [oauthClients, selectedOAuthClientKey]);
   // Listen for Google Auth Code
   useEffect(() => {
     if (window.electron?.onGoogleAuthCode) {
       console.log('[OAuth] Registering Google auth code IPC listener');
       const cleanup = window.electron.onGoogleAuthCode((code) => {
         console.log('[OAuth] Received Google auth code via IPC:', code?.substring(0, 10) + '...');
+        lastSubmittedAuthCodeRef.current = null;
         setAuthCode(code);
       });
       return cleanup;
@@ -253,7 +277,14 @@ export function CloudAccountList() {
 
   // Auto-submit when authCode is set and dialog is open
   useEffect(() => {
-    if (authCode && isAddDialogOpen && !addMutation.isPending) {
+    if (
+      shouldAutoSubmitGoogleAuthCode({
+        authCode,
+        isAddDialogOpen,
+        isPending: addMutation.isPending,
+        lastSubmittedAuthCode: lastSubmittedAuthCodeRef.current,
+      })
+    ) {
       console.log('[OAuth] Auto-submitting Google auth code');
       submitAuthCode(authCode);
     }
@@ -399,7 +430,16 @@ export function CloudAccountList() {
 
   const openGoogleAuthSignIn = async () => {
     try {
-      await startAuthFlow();
+      lastSubmittedAuthCodeRef.current = null;
+      const effectiveClientKey =
+        selectedOAuthClientKey || oauthClients.find((client) => client.is_active)?.key;
+      await startAuthFlow(
+        effectiveClientKey
+          ? {
+              oauthClientKey: effectiveClientKey,
+            }
+          : undefined,
+      );
     } catch (e) {
       toast({
         title: t('cloud.toast.startAuthFailed'),
@@ -833,7 +873,16 @@ export function CloudAccountList() {
           </DialogContent>
         </Dialog>
 
-        <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+        <Dialog
+          open={isAddDialogOpen}
+          onOpenChange={(open) => {
+            setIsAddDialogOpen(open);
+            if (!open) {
+              setAuthCode('');
+              lastSubmittedAuthCodeRef.current = null;
+            }
+          }}
+        >
           <DialogTrigger asChild>
             <Button className="cursor-pointer">
               <Plus className="mr-2 h-4 w-4" />
@@ -846,6 +895,41 @@ export function CloudAccountList() {
               <DialogDescription>{t('cloud.authDialog.description')}</DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4">
+              <div className="space-y-2">
+                <Label htmlFor="oauth-client-select">{t('cloud.authDialog.oauthClient')}</Label>
+                <Select
+                  value={selectedOAuthClientKey || undefined}
+                  onValueChange={(value) => {
+                    setSelectedOAuthClientKey(value);
+                    setActiveOAuthClientMutation.mutate(
+                      {
+                        clientKey: value,
+                      },
+                      {
+                        onError: (error) => {
+                          toast({
+                            title: t('cloud.toast.updateSettingsFailed'),
+                            description: getLocalizedErrorMessage(error, t),
+                            variant: 'destructive',
+                          });
+                        },
+                      },
+                    );
+                  }}
+                  disabled={isOAuthClientsLoading || setActiveOAuthClientMutation.isPending}
+                >
+                  <SelectTrigger id="oauth-client-select">
+                    <SelectValue placeholder={t('cloud.authDialog.oauthClientPlaceholder')} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {oauthClients.map((client) => (
+                      <SelectItem key={client.key} value={client.key}>
+                        {client.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
               <div className="grid grid-cols-4 items-center gap-4">
                 <Button variant="outline" className="col-span-4" onClick={openGoogleAuthSignIn}>
                   <Cloud className="mr-2 h-4 w-4" />
@@ -858,7 +942,9 @@ export function CloudAccountList() {
                   id="code"
                   placeholder={t('cloud.authDialog.placeholder')}
                   value={authCode}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAuthCode(e.target.value)}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                    setAuthCode(e.target.value);
+                  }}
                 />
                 <p className="text-muted-foreground text-xs">{t('cloud.authDialog.instruction')}</p>
               </div>

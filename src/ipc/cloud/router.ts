@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { os } from '@orpc/server';
+import { os, ORPCError } from '@orpc/server';
 import {
   addGoogleAccount,
   bindCloudIdentityProfile,
@@ -18,6 +18,9 @@ import {
   setAutoSwitchEnabled,
   forcePollCloudMonitor,
   startAuthFlow,
+  listOAuthClients,
+  getActiveOAuthClient,
+  setActiveOAuthClient,
   exportCloudAccounts,
   importCloudAccounts,
 } from './handler';
@@ -67,12 +70,44 @@ const switchStatusSnapshotSchema = z.object({
   }),
 });
 
+function extractErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return String(error);
+}
+
+export function toSyncLocalAccountORPCError(error: unknown): ORPCError<string, undefined> {
+  const message = extractErrorMessage(error);
+  const normalized = message.toLowerCase();
+
+  if (
+    normalized.includes('unauthenticated') ||
+    normalized.includes('unauthorized') ||
+    normalized.includes('token may be expired') ||
+    normalized.includes('re-login in antigravity ide')
+  ) {
+    return new ORPCError('UNAUTHORIZED', { message });
+  }
+
+  if (
+    normalized.includes('no cloud account found in ide') ||
+    normalized.includes('no oauth token found in ide state') ||
+    normalized.includes('antigravity database not found')
+  ) {
+    return new ORPCError('BAD_REQUEST', { message });
+  }
+
+  return new ORPCError('INTERNAL_SERVER_ERROR', { message });
+}
+
 export const cloudRouter = os.router({
   addGoogleAccount: os
-    .input(z.object({ authCode: z.string() }))
+    .input(z.object({ authCode: z.string(), oauthClientKey: z.string().optional() }))
     .output(CloudAccountSchema)
     .handler(async ({ input }) => {
-      return addGoogleAccount(input.authCode);
+      return addGoogleAccount(input.authCode, input.oauthClientKey);
     }),
 
   listCloudAccounts: os.output(z.array(CloudAccountSchema)).handler(async () => {
@@ -115,9 +150,41 @@ export const cloudRouter = os.router({
     await forcePollCloudMonitor();
   }),
 
-  startAuthFlow: os.output(z.void()).handler(async () => {
-    await startAuthFlow();
+  startAuthFlow: os
+    .input(z.object({ oauthClientKey: z.string().optional() }).optional())
+    .output(z.void())
+    .handler(async ({ input }) => {
+      await startAuthFlow(input?.oauthClientKey);
+    }),
+
+  listOAuthClients: os
+    .output(
+      z.array(
+        z.object({
+          key: z.string(),
+          label: z.string(),
+          client_id: z.string(),
+          is_active: z.boolean(),
+          is_builtin: z.boolean(),
+        }),
+      ),
+    )
+    .handler(async () => {
+      return listOAuthClients();
+    }),
+
+  getActiveOAuthClient: os.output(z.object({ client_key: z.string() })).handler(async () => {
+    return {
+      client_key: getActiveOAuthClient(),
+    };
   }),
+
+  setActiveOAuthClient: os
+    .input(z.object({ clientKey: z.string() }))
+    .output(z.void())
+    .handler(async ({ input }) => {
+      setActiveOAuthClient(input.clientKey);
+    }),
 
   setAccountProxy: os
     .input(z.object({ accountId: z.string(), proxyUrl: z.string().nullable() }))
@@ -138,7 +205,7 @@ export const cloudRouter = os.router({
       return result;
     } catch (error: any) {
       logger.error('[ORPC] syncLocalAccount error:', error.message, error.stack);
-      throw error;
+      throw toSyncLocalAccountORPCError(error);
     }
   }),
 

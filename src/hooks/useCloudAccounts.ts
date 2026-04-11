@@ -5,11 +5,15 @@ import {
   deleteCloudAccount,
   refreshAccountQuota,
   setAccountProxy,
+  listOAuthClients,
+  setActiveOAuthClient,
+  type OAuthClientDescriptor,
 } from '@/actions/cloud';
 import { CloudAccount } from '@/types/cloudAccount';
 
 export const QUERY_KEYS = {
   cloudAccounts: ['cloudAccounts'],
+  oauthClients: ['oauthClients'],
 };
 
 export function useCloudAccounts() {
@@ -27,6 +31,24 @@ export function useAddGoogleAccount() {
     mutationFn: addGoogleAccount,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.cloudAccounts });
+    },
+  });
+}
+
+export function useOAuthClients() {
+  return useQuery<OAuthClientDescriptor[]>({
+    queryKey: QUERY_KEYS.oauthClients,
+    queryFn: listOAuthClients,
+    staleTime: 1000 * 60 * 5,
+  });
+}
+
+export function useSetActiveOAuthClient() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: setActiveOAuthClient,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.oauthClients });
     },
   });
 }
