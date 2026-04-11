@@ -59,6 +59,10 @@ const CLAUDE_TO_GEMINI: Record<string, string> = {
   'gemini-3.1-pro-preview': 'gemini-3.1-pro-high',
   'gemini-3.1-pro': 'gemini-3.1-pro-high',
   'gemini-3.0-pro': 'gemini-3.1-pro-high',
+  'gemini-3-pro': 'gemini-3-pro-preview',
+  'gemini-3-pro-preview': 'gemini-3-pro-preview',
+  'gemini-3-pro-low': 'gemini-3-pro-low',
+  'gemini-3-pro-high': 'gemini-3-pro-high',
   'gemini-2.5-flash': 'gemini-3-flash',
   'gemini-2.5-pro': 'gemini-3.1-pro-high',
   'gemini-2.0-flash': 'gemini-3-flash',
@@ -79,11 +83,10 @@ export const MODEL_LIST_CREATED_AT = 1770652800;
 export const MODEL_LIST_OWNER = 'antigravity';
 
 const GEMINI_MODEL_ALIASES: Record<string, string> = {
-  'gemini-3.1-pro': 'gemini-3.1-pro-high',
-  'gemini-3.0-pro': 'gemini-3.1-pro-high',
-  'gemini-3.1-pro-preview': 'gemini-3.1-pro-high',
   'gemini-3-pro-image-preview': 'gemini-3-pro-image',
   'gemini-3-flash-preview': 'gemini-3-flash',
+  'gemini-3.1-pro-preview': 'gemini-3.1-pro-high',
+  'gemini-3.1-pro': 'gemini-3.1-pro-high',
 };
 
 export function getSupportedModels(): string[] {

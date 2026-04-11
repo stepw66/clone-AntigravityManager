@@ -3,7 +3,11 @@ import { QuotaData, LoadProjectResponse, QuotaApiResponse } from './types';
 import { logger } from '../../utils/logger';
 
 // Constants
-const QUOTA_API_URL = 'https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels';
+const QUOTA_API_ENDPOINTS = [
+  'https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:fetchAvailableModels',
+  'https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels',
+  'https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels',
+] as const;
 const CLOUD_CODE_BASE_URL = 'https://cloudcode-pa.googleapis.com';
 const USER_AGENT = 'antigravity/1.11.3 Darwin/arm64'; // Keeping the same UA as source
 
@@ -83,15 +87,16 @@ export class QuotaService {
     const finalProjectId = projectId;
 
     const client = this.createClient();
-    const payload = { project: finalProjectId };
-    const url = QUOTA_API_URL;
-    const maxRetries = 3;
+    const payload = finalProjectId ? { project: finalProjectId } : {};
+    let lastError: Error | null = null;
 
-    logger.info(`Sending quota request to ${url}`);
+    for (let endpointIndex = 0; endpointIndex < QUOTA_API_ENDPOINTS.length; endpointIndex++) {
+      const endpoint = QUOTA_API_ENDPOINTS[endpointIndex];
+      const hasNextEndpoint = endpointIndex + 1 < QUOTA_API_ENDPOINTS.length;
+      logger.info(`Sending quota request to ${endpoint}`);
 
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        const response = await client.post<QuotaApiResponse>(url, payload, {
+        const response = await client.post<QuotaApiResponse>(endpoint, payload, {
           headers: {
             Authorization: `Bearer ${accessToken}`,
             'User-Agent': USER_AGENT,
@@ -127,8 +132,14 @@ export class QuotaService {
           }
         }
 
-        return { quotaData, projectId: projectId };
+        if (endpointIndex > 0) {
+          logger.info(`Quota API fallback succeeded at endpoint #${endpointIndex + 1}`);
+        }
+
+        return { quotaData, projectId };
       } catch (error: any) {
+        let shouldFallback = true;
+
         if (axios.isAxiosError(error)) {
           const status = error.response?.status;
           let text = '';
@@ -147,23 +158,36 @@ export class QuotaService {
                 isForbidden: true,
                 subscriptionTier: subscriptionTier,
               },
-              projectId: projectId,
+              projectId,
             };
           }
 
-          logger.warn(`API Error: ${status} - ${text} (Attempt ${attempt}/${maxRetries})`);
+          if (hasNextEndpoint && (status === 429 || (typeof status === 'number' && status >= 500))) {
+            logger.warn(
+              `Quota API ${endpoint} returned ${status}, falling back to next endpoint`,
+            );
+            lastError = new Error(`HTTP ${status} - ${text}`);
+            await new Promise((r) => setTimeout(r, 1000));
+            continue;
+          }
+
+          logger.warn(`API Error: ${status} - ${text}`);
+          lastError = new Error(`HTTP ${status} - ${text}`);
+          shouldFallback = typeof status !== 'number';
         } else {
-          logger.warn(`Request Failed: ${error.message} (Attempt ${attempt}/${maxRetries})`);
+          logger.warn(`Request Failed at ${endpoint}: ${error.message}`);
+          lastError = error instanceof Error ? error : new Error(String(error));
         }
 
-        if (attempt < maxRetries) {
+        if (hasNextEndpoint && shouldFallback) {
+          logger.warn(`Quota API request failed at ${endpoint}, falling back to next endpoint`);
           await new Promise((r) => setTimeout(r, 1000));
         } else {
-          throw new Error(`Quota query failed: ${error.message}`);
+          throw lastError ?? new Error(`Quota query failed: ${error.message}`);
         }
       }
     }
 
-    throw new Error('Unknown error in fetchQuota'); // Should not reach here
+    throw lastError ?? new Error('Unknown error in fetchQuota');
   }
 }

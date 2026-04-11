@@ -97,4 +97,5 @@ describe('Proxy Parity Fixtures', () => {
       expect(output).toContain(token);
     }
   });
+
 });

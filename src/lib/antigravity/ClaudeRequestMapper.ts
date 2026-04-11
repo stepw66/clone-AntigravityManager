@@ -370,18 +370,6 @@ function detectsNetworkingTool(tools?: (Tool | GeminiToolDeclaration)[]): boolea
   return false;
 }
 
-/**
- * Inject Google Search Tool
- * Adds googleSearch tool to the request
- */
-function supportsMixedTools(mappedModel?: string): boolean {
-  if (!mappedModel) {
-    return false;
-  }
-  const modelLower = mappedModel.toLowerCase();
-  return modelLower.includes('gemini-3');
-}
-
 function injectGoogleSearchTool(body: { tools?: GeminiToolDeclaration[] }, mappedModel?: string) {
   if (!body.tools) {
     body.tools = [];
@@ -389,9 +377,9 @@ function injectGoogleSearchTool(body: { tools?: GeminiToolDeclaration[] }, mappe
   const toolsArr = body.tools;
 
   const hasFunctions = toolsArr.some((t) => t.functionDeclarations);
-  if (hasFunctions && !supportsMixedTools(mappedModel)) {
+  if (hasFunctions) {
     logger.info(
-      'Skipping googleSearch injection due to existing functionDeclarations on old model',
+      `[Claude-Request] Skipping googleSearch injection for ${mappedModel ?? 'unknown-model'} because functionDeclarations are present (v1internal incompatible)`,
     );
     return;
   }
@@ -631,13 +619,9 @@ function buildTools(
   if (functionDeclarations.length > 0) {
     toolList.push({ functionDeclarations });
     if (hasGoogleSearch) {
-      if (supportsMixedTools(mappedModel)) {
-        toolList.push({ googleSearch: {} });
-      } else {
-        logger.info(
-          `[Claude-Request] Skipping googleSearch injection for ${mappedModel} due to existing functionDeclarations on old model`,
-        );
-      }
+      logger.info(
+        `[Claude-Request] Skipping googleSearch injection for ${mappedModel} because functionDeclarations are present (v1internal incompatible)`,
+      );
     }
   } else if (hasGoogleSearch) {
     toolList.push({ googleSearch: {} });

@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_APP_CONFIG, ProxyConfig } from '../../types/config';
 import { setServerConfig } from '../../server/server-config';
 import { TokenManagerService } from '../../server/modules/proxy/token-manager.service';
+import { GoogleAPIService } from '../../services/GoogleAPIService';
 
 function createProxyConfig(overrides: Partial<ProxyConfig>): ProxyConfig {
   return {
@@ -54,6 +55,96 @@ describe('TokenManagerService parity scheduling replay', () => {
   beforeEach(() => {
     service = new TokenManagerService();
     seedTokens(service);
+  });
+
+  it('rewrites gemini pro model to first available account candidate', () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    (service as any).tokens = new Map([
+      [
+        'acc-1',
+        {
+          account_id: 'acc-1',
+          email: 'acc-1@test.dev',
+          access_token: 'token-1',
+          refresh_token: 'refresh-1',
+          token_type: 'Bearer',
+          expires_in: 3600,
+          expiry_timestamp: nowSec + 3600,
+          project_id: 'project-1',
+          session_id: 'session-1',
+          model_quotas: {
+            'gemini-3.1-pro-low': 80,
+          },
+          model_limits: {},
+          model_reset_times: {},
+          model_forwarding_rules: {},
+        },
+      ],
+    ]);
+
+    const resolved = service.resolveDynamicModelForAccount('acc-1', 'gemini-3-pro');
+    expect(resolved).toBe('gemini-3.1-pro-low');
+  });
+
+  it('keeps original model when dynamic rewrite is not applicable', () => {
+    const resolved = service.resolveDynamicModelForAccount('acc-1', 'gemini-3-flash');
+    expect(resolved).toBe('gemini-3-flash');
+  });
+
+  it('passes oauth_client_key when refreshing token and persists refreshed key', async () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const tokenData = {
+      account_id: 'acc-1',
+      email: 'acc-1@test.dev',
+      access_token: 'token-1',
+      refresh_token: 'refresh-1',
+      oauth_client_key: 'custom-client',
+      upstream_proxy_url: 'http://127.0.0.1:8080',
+      token_type: 'Bearer',
+      expires_in: 3600,
+      expiry_timestamp: nowSec - 1,
+      project_id: 'project-1',
+      session_id: 'session-1',
+      model_quotas: {},
+      model_limits: {},
+      model_reset_times: {},
+      model_forwarding_rules: {},
+    };
+
+    (service as any).tokens = new Map([['acc-1', tokenData]]);
+
+    const refreshSpy = vi.spyOn(GoogleAPIService, 'refreshAccessToken').mockResolvedValue({
+      access_token: 'token-new',
+      expires_in: 7200,
+      token_type: 'Bearer',
+      oauth_client_key: 'custom-fallback',
+    });
+    const persistSpy = vi.spyOn(service as any, 'persistTokenState').mockResolvedValue(undefined);
+
+    const selected = await (service as any).finalizeSelectedToken('acc-1', tokenData, nowSec);
+
+    expect(refreshSpy).toHaveBeenCalledWith(
+      'refresh-1',
+      'http://127.0.0.1:8080',
+      'custom-client',
+    );
+    expect(selected?.token.oauth_client_key).toBe('custom-fallback');
+    expect((service as any).tokens.get('acc-1')?.oauth_client_key).toBe('custom-fallback');
+
+    refreshSpy.mockRestore();
+    persistSpy.mockRestore();
+  });
+
+  it('keeps oauth_client_key unset for legacy account refreshed by enterprise client', () => {
+    const normalized = (service as any).normalizeRefreshedOauthClientKey(
+      {
+        oauth_client_key: undefined,
+        project_id: undefined,
+      },
+      'antigravity_enterprise',
+    );
+
+    expect(normalized).toBeUndefined();
   });
 
   it('prioritizes preferred account in parity mode', async () => {

@@ -15,10 +15,7 @@ import {
 } from '../../../lib/antigravity/types';
 import { calculateRetryDelay, sleep } from '../../../lib/antigravity/retry-utils';
 import { normalizeObjectJsonSchema } from '../../../lib/antigravity/JsonSchemaUtils';
-import {
-  classifyStreamError,
-  formatErrorForSSE,
-} from '../../../lib/antigravity/stream-error-utils';
+import { classifyStreamError } from '../../../lib/antigravity/stream-error-utils';
 import {
   OpenAIChatRequest,
   AnthropicChatRequest,
@@ -80,6 +77,10 @@ export class ProxyService {
         throw new Error('No available accounts');
       }
       attemptedAccountIds.add(token.id);
+      const effectiveTargetModel = this.tokenManager.resolveDynamicModelForAccount(
+        token.id,
+        targetModel,
+      );
 
       try {
         const projectId = token.token.project_id ?? '';
@@ -89,7 +90,8 @@ export class ProxyService {
           projectId,
           requestUserAgent,
         );
-        this.applyInternalGenerationConstraints(geminiBody, targetModel, token.id);
+        geminiBody.model = effectiveTargetModel;
+        this.applyInternalGenerationConstraints(geminiBody, effectiveTargetModel, token.id);
 
         if (request.stream) {
           const stream = await this.geminiClient.streamGenerateInternal(
@@ -120,7 +122,8 @@ export class ProxyService {
               '',
               requestUserAgent,
             );
-            this.applyInternalGenerationConstraints(fallbackBody, targetModel, token.id);
+            fallbackBody.model = effectiveTargetModel;
+            this.applyInternalGenerationConstraints(fallbackBody, effectiveTargetModel, token.id);
             if (request.stream) {
               const stream = await this.geminiClient.streamGenerateInternal(
                 fallbackBody,
@@ -186,7 +189,7 @@ export class ProxyService {
         }
 
         lastError = error;
-        await this.applyUpstreamPenalty(token.id, targetModel, error);
+        await this.applyUpstreamPenalty(token.id, effectiveTargetModel, error);
       }
     }
     throw lastError || new Error('Request failed after retries');
@@ -267,12 +270,9 @@ export class ProxyService {
 
       upstreamStream.on('error', (err: unknown) => {
         const cleanError = err instanceof Error ? err : new Error(String(err));
-        const { type, message } = classifyStreamError(cleanError);
+        const { type } = classifyStreamError(cleanError);
 
         this.logger.error(`Stream error: ${type} - ${cleanError.message}`);
-
-        // Send SSE error event before closing
-        subscriber.next(formatErrorForSSE(type, message));
         subscriber.error(cleanError);
       });
     });
@@ -309,17 +309,21 @@ export class ProxyService {
         throw new Error('No available accounts (all exhausted or rate limited)');
       }
       attemptedAccountIds.add(token.id);
+      const effectiveTargetModel = this.tokenManager.resolveDynamicModelForAccount(
+        token.id,
+        targetModel,
+      );
 
       try {
         const requestUserAgent = await resolveRequestUserAgent();
         const internalBody = this.createGeminiInternalRequest(
-          targetModel,
+          effectiveTargetModel,
           request,
           token.token.project_id ?? '',
           'generate-content',
           requestUserAgent,
         );
-        this.applyInternalGenerationConstraints(internalBody, targetModel, token.id);
+        this.applyInternalGenerationConstraints(internalBody, effectiveTargetModel, token.id);
 
         const response = await this.generateInternalWithStreamFallback(
           internalBody,
@@ -337,13 +341,13 @@ export class ProxyService {
           try {
             const requestUserAgent = await resolveRequestUserAgent();
             const fallbackBody = this.createGeminiInternalRequest(
-              targetModel,
+              effectiveTargetModel,
               request,
               '',
               'generate-content',
               requestUserAgent,
             );
-            this.applyInternalGenerationConstraints(fallbackBody, targetModel, token.id);
+            this.applyInternalGenerationConstraints(fallbackBody, effectiveTargetModel, token.id);
             const response = await this.generateInternalWithStreamFallback(
               fallbackBody,
               token.token.access_token,
@@ -358,7 +362,7 @@ export class ProxyService {
           lastError = err;
         }
 
-        await this.applyUpstreamPenalty(token.id, targetModel, lastError);
+        await this.applyUpstreamPenalty(token.id, effectiveTargetModel, lastError);
       }
     }
 
@@ -395,17 +399,21 @@ export class ProxyService {
         throw new Error('No available accounts (all exhausted or rate limited)');
       }
       attemptedAccountIds.add(token.id);
+      const effectiveTargetModel = this.tokenManager.resolveDynamicModelForAccount(
+        token.id,
+        targetModel,
+      );
 
       try {
         const requestUserAgent = await resolveRequestUserAgent();
         const internalBody = this.createGeminiInternalRequest(
-          targetModel,
+          effectiveTargetModel,
           request,
           token.token.project_id ?? '',
           'generate-content',
           requestUserAgent,
         );
-        this.applyInternalGenerationConstraints(internalBody, targetModel, token.id);
+        this.applyInternalGenerationConstraints(internalBody, effectiveTargetModel, token.id);
 
         const stream = await this.geminiClient.streamGenerateInternal(
           internalBody,
@@ -422,13 +430,13 @@ export class ProxyService {
           try {
             const requestUserAgent = await resolveRequestUserAgent();
             const fallbackBody = this.createGeminiInternalRequest(
-              targetModel,
+              effectiveTargetModel,
               request,
               '',
               'generate-content',
               requestUserAgent,
             );
-            this.applyInternalGenerationConstraints(fallbackBody, targetModel, token.id);
+            this.applyInternalGenerationConstraints(fallbackBody, effectiveTargetModel, token.id);
             const stream = await this.geminiClient.streamGenerateInternal(
               fallbackBody,
               token.token.access_token,
@@ -443,7 +451,7 @@ export class ProxyService {
           lastError = err;
         }
 
-        await this.applyUpstreamPenalty(token.id, targetModel, lastError);
+        await this.applyUpstreamPenalty(token.id, effectiveTargetModel, lastError);
       }
     }
 
@@ -698,13 +706,18 @@ export class ProxyService {
         throw new Error('No available accounts (all exhausted or rate limited)');
       }
       attemptedAccountIds.add(token.id);
+      const effectiveTargetModel = this.tokenManager.resolveDynamicModelForAccount(
+        token.id,
+        targetModel,
+      );
 
       try {
         const claudeRequest = this.convertOpenAIToClaude(request);
         const projectId = token.token.project_id ?? '';
         const requestUserAgent = await resolveRequestUserAgent();
         const geminiBody = transformClaudeRequestIn(claudeRequest, projectId, requestUserAgent);
-        this.applyInternalGenerationConstraints(geminiBody, targetModel, token.id);
+        geminiBody.model = effectiveTargetModel;
+        this.applyInternalGenerationConstraints(geminiBody, effectiveTargetModel, token.id);
 
         // Use v1internal API (same as Anthropic handler)
         if (request.stream) {
@@ -765,7 +778,8 @@ export class ProxyService {
             const claudeRequest = this.convertOpenAIToClaude(request);
             const requestUserAgent = await resolveRequestUserAgent();
             const fallbackBody = transformClaudeRequestIn(claudeRequest, '', requestUserAgent);
-            this.applyInternalGenerationConstraints(fallbackBody, targetModel, token.id);
+            fallbackBody.model = effectiveTargetModel;
+            this.applyInternalGenerationConstraints(fallbackBody, effectiveTargetModel, token.id);
             if (request.stream) {
               const stream = await this.geminiClient.streamGenerateInternal(
                 fallbackBody,
@@ -791,7 +805,7 @@ export class ProxyService {
           lastError = err;
         }
 
-        await this.applyUpstreamPenalty(token.id, targetModel, lastError);
+        await this.applyUpstreamPenalty(token.id, effectiveTargetModel, lastError);
       }
     }
     throw lastError || new Error('Request failed after retries');
@@ -1087,6 +1101,7 @@ export class ProxyService {
       upstreamStream.on('error', (err: unknown) => {
         // Convert to clean Error to avoid circular reference issues (socket objects)
         const cleanError = err instanceof Error ? new Error(err.message) : new Error(String(err));
+        this.logger.error(`OpenAI-compatible stream error: ${cleanError.message}`);
         subscriber.error(cleanError);
       });
     });

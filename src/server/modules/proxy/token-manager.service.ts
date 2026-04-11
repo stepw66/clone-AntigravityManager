@@ -11,6 +11,7 @@ interface TokenData {
   account_id: string;
   access_token: string;
   refresh_token: string;
+  oauth_client_key?: string;
   token_type: string;
   expires_in: number;
   expiry_timestamp: number;
@@ -56,6 +57,14 @@ function normalizeModelId(modelId: string | null | undefined): string | undefine
     return undefined;
   }
   const normalized = modelId.replace(/^models\//i, '').trim();
+  return normalized !== '' ? normalized : undefined;
+}
+
+function normalizeClientKey(clientKey: string | undefined): string | undefined {
+  if (typeof clientKey !== 'string') {
+    return undefined;
+  }
+  const normalized = clientKey.trim().toLowerCase();
   return normalized !== '' ? normalized : undefined;
 }
 
@@ -755,12 +764,13 @@ export class TokenManagerService implements OnModuleInit {
       email: account.email,
       access_token: account.token.access_token,
       refresh_token: account.token.refresh_token,
+      oauth_client_key: normalizeClientKey(account.token.oauth_client_key),
       token_type: account.token.token_type || 'Bearer',
       expires_in: account.token.expires_in,
       expiry_timestamp: account.token.expiry_timestamp,
       project_id: account.token.project_id || undefined,
       session_id: account.token.session_id || this.generateSessionId(),
-      upstream_proxy_url: account.token.upstream_proxy_url || undefined,
+      upstream_proxy_url: account.token.upstream_proxy_url || account.proxy_url || undefined,
       quota,
       model_quotas: extractedState.modelQuotas,
       model_limits: extractedState.modelLimits,
@@ -789,10 +799,18 @@ export class TokenManagerService implements OnModuleInit {
       if (nowSeconds >= tokenData.expiry_timestamp - 300) {
         this.logger.log(`Access token near expiry for ${tokenData.email}; refreshing`);
         try {
-          const newTokens = await GoogleAPIService.refreshAccessToken(tokenData.refresh_token);
+          const newTokens = await GoogleAPIService.refreshAccessToken(
+            tokenData.refresh_token,
+            tokenData.upstream_proxy_url,
+            tokenData.oauth_client_key,
+          );
           tokenData.access_token = newTokens.access_token;
           tokenData.expires_in = newTokens.expires_in;
           tokenData.expiry_timestamp = nowSeconds + newTokens.expires_in;
+          tokenData.oauth_client_key = this.normalizeRefreshedOauthClientKey(
+            tokenData,
+            newTokens.oauth_client_key,
+          );
           await this.persistTokenState(accountId, tokenData);
           this.tokens.set(accountId, tokenData);
           this.logger.log(`Access token refreshed for ${tokenData.email}`);
@@ -855,6 +873,7 @@ export class TokenManagerService implements OnModuleInit {
           expires_in: tokenData.expires_in,
           expiry_timestamp: tokenData.expiry_timestamp,
           project_id: effectiveProjectId,
+          oauth_client_key: tokenData.oauth_client_key,
           session_id: tokenData.session_id,
           upstream_proxy_url: tokenData.upstream_proxy_url,
         },
@@ -913,6 +932,10 @@ export class TokenManagerService implements OnModuleInit {
           expires_in: tokenData.expires_in,
           expiry_timestamp: tokenData.expiry_timestamp,
           project_id: tokenData.project_id ?? acc.token.project_id,
+          oauth_client_key:
+            tokenData.oauth_client_key ??
+            normalizeClientKey(acc.token.oauth_client_key) ??
+            acc.token.oauth_client_key,
           session_id: tokenData.session_id ?? acc.token.session_id,
           upstream_proxy_url: tokenData.upstream_proxy_url ?? acc.token.upstream_proxy_url,
         };
@@ -927,6 +950,13 @@ export class TokenManagerService implements OnModuleInit {
     return this.tokens.size;
   }
 
+  private normalizeRefreshedOauthClientKey(
+    currentToken: { oauth_client_key?: string; project_id?: string },
+    refreshedClientKey?: string,
+  ): string | undefined {
+    return GoogleAPIService.normalizeRefreshedOAuthClientKey(currentToken, refreshedClientKey);
+  }
+
   getAllCollectedModels(): Set<string> {
     const allModels = new Set<string>();
     for (const tokenData of this.tokens.values()) {
@@ -935,6 +965,102 @@ export class TokenManagerService implements OnModuleInit {
       }
     }
     return allModels;
+  }
+
+  private getAvailableModelsFromToken(tokenData: TokenData): Set<string> {
+    const availableModels = new Set<string>();
+
+    for (const modelId of Object.keys(tokenData.model_quotas ?? {})) {
+      const normalized = normalizeModelId(modelId)?.toLowerCase();
+      if (normalized) {
+        availableModels.add(normalized);
+      }
+    }
+
+    for (const modelId of Object.keys(tokenData.quota?.models ?? {})) {
+      const normalized = normalizeModelId(modelId)?.toLowerCase();
+      if (normalized) {
+        availableModels.add(normalized);
+      }
+    }
+
+    return availableModels;
+  }
+
+  private buildDynamicModelCandidates(modelName: string): string[] | null {
+    const normalizedModel = normalizeModelId(modelName)?.toLowerCase();
+    if (!normalizedModel) {
+      return null;
+    }
+
+    const proFamily = new Set([
+      'gemini-3-pro',
+      'gemini-3-pro-preview',
+      'gemini-3-pro-high',
+      'gemini-3-pro-low',
+      'gemini-3.1-pro',
+      'gemini-3.1-pro-preview',
+      'gemini-3.1-pro-high',
+      'gemini-3.1-pro-low',
+    ]);
+
+    if (!proFamily.has(normalizedModel)) {
+      return null;
+    }
+
+    const candidates: string[] = [];
+    const seen = new Set<string>();
+    const pushCandidate = (candidate: string) => {
+      if (!seen.has(candidate)) {
+        seen.add(candidate);
+        candidates.push(candidate);
+      }
+    };
+
+    // Keep requested model first, then fallback across the same family.
+    pushCandidate(normalizedModel);
+    pushCandidate('gemini-3.1-pro-preview');
+    pushCandidate('gemini-3-pro-preview');
+    pushCandidate('gemini-3.1-pro-high');
+    pushCandidate('gemini-3-pro-high');
+    pushCandidate('gemini-3.1-pro-low');
+    pushCandidate('gemini-3-pro-low');
+
+    return candidates;
+  }
+
+  resolveDynamicModelForAccount(accountId: string, mappedModel: string): string {
+    const candidates = this.buildDynamicModelCandidates(mappedModel);
+    if (!candidates) {
+      return mappedModel;
+    }
+
+    const tokenData = this.tokens.get(accountId);
+    if (!tokenData) {
+      return mappedModel;
+    }
+
+    const availableModels = this.getAvailableModelsFromToken(tokenData);
+    if (availableModels.size === 0) {
+      return mappedModel;
+    }
+
+    const normalizedMappedModel = normalizeModelId(mappedModel)?.toLowerCase() ?? mappedModel;
+
+    for (const candidate of candidates) {
+      if (!availableModels.has(candidate)) {
+        continue;
+      }
+
+      if (candidate !== normalizedMappedModel) {
+        this.logger.log(
+          `[Dynamic-Model-Rewrite] account=${accountId} ${mappedModel} -> ${candidate}`,
+        );
+      }
+      return candidate;
+    }
+
+    return mappedModel;
   }
 
   getModelOutputLimitForAccount(accountId: string, modelName: string): number | undefined {

@@ -12,6 +12,7 @@ const mockTokenManager = {
   recordParityError: vi.fn(),
   getModelOutputLimitForAccount: vi.fn(),
   getModelThinkingBudgetForAccount: vi.fn(),
+  resolveDynamicModelForAccount: vi.fn((_token: unknown, model: string) => model),
 };
 const mockGeminiClient = { streamGenerateInternal: vi.fn(), generateInternal: vi.fn() };
 
@@ -650,5 +651,44 @@ describe('ProxyService Protocol Parity Fixtures', () => {
     expect(output).toContain('"tool_calls"');
     expect(output).toContain('"content":"final answer"');
     expect(output).toContain('data: [DONE]');
+  });
+
+  it('propagates OpenAI-compatible upstream stream errors instead of completing with [DONE]', async () => {
+    const service = new TestableProxyService();
+    const stream = new EventEmitter();
+    const observable = (service as any).processStreamResponse(stream, 'gpt-4o-mini');
+    const chunks: string[] = [];
+
+    const streamResult = await new Promise<{ error?: Error; completed: boolean }>((resolve) => {
+      observable.subscribe({
+        next: (chunk: string) => {
+          chunks.push(chunk);
+        },
+        error: (error: unknown) =>
+          resolve({
+            completed: false,
+            error: error instanceof Error ? error : new Error(String(error)),
+          }),
+        complete: () => resolve({ completed: true }),
+      });
+
+      const payload = JSON.stringify({
+        candidates: [
+          {
+            content: {
+              parts: [{ text: 'partial output' }],
+            },
+          },
+        ],
+      });
+
+      stream.emit('data', Buffer.from(`data: ${payload}\n`));
+      stream.emit('error', new Error('socket hang up'));
+    });
+
+    expect(streamResult.completed).not.toBe(true);
+    expect(streamResult.error?.message).toContain('socket hang up');
+    expect(chunks.join('')).toContain('"content":"partial output"');
+    expect(chunks.join('')).not.toContain('data: [DONE]');
   });
 });

@@ -4,7 +4,7 @@ import { logger } from '../../../utils/logger';
 
 const REMOTE_VERSION_URL = 'https://antigravity-auto-updater-974169037036.us-central1.run.app';
 const CHANGELOG_URL = 'https://antigravity.google/changelog';
-export const FALLBACK_VERSION = '1.19.6';
+export const FALLBACK_VERSION = '1.22.2';
 const DEFAULT_REMOTE_TIMEOUT_MS = 2500;
 const VERSION_REGEX = /\d+\.\d+\.\d+/g;
 
