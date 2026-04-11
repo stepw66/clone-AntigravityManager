@@ -3,6 +3,16 @@ import { CloudAccountRepo } from '../ipc/database/cloudHandler';
 import { GoogleAPIService } from './GoogleAPIService';
 import { AutoSwitchService } from './AutoSwitchService';
 import { logger } from '../utils/logger';
+import { classifyAccountStatusFromError } from '../utils/account-status';
+
+function hasReusableCachedQuota(account: {
+  quota?: { models?: Record<string, unknown> };
+}): boolean {
+  if (!account.quota || !account.quota.models) {
+    return false;
+  }
+  return Object.keys(account.quota.models).length > 0;
+}
 
 export class CloudMonitorService {
   private static intervalId: NodeJS.Timeout | null = null;
@@ -106,14 +116,23 @@ export class CloudMonitorService {
               const newToken = await GoogleAPIService.refreshAccessToken(
                 account.token.refresh_token,
                 account.proxy_url,
+                account.token.oauth_client_key,
               );
               account.token.access_token = newToken.access_token;
               account.token.expires_in = newToken.expires_in;
               account.token.expiry_timestamp = now + newToken.expires_in;
+              account.token.oauth_client_key = GoogleAPIService.normalizeRefreshedOAuthClientKey(
+                account.token,
+                newToken.oauth_client_key,
+              );
               await CloudAccountRepo.updateToken(account.id, account.token);
               accessToken = newToken.access_token;
             } catch (refreshError) {
               logger.error(`Monitor: Token refresh failed for ${account.email}`, refreshError);
+              const classified = classifyAccountStatusFromError(refreshError);
+              if (classified) {
+                await CloudAccountRepo.setAccountStatus(account.id, classified.status, classified.reason);
+              }
               continue;
             }
           }
@@ -139,9 +158,18 @@ export class CloudMonitorService {
           // 3. Update DB
           await CloudAccountRepo.updateQuota(account.id, quota);
           await CloudAccountRepo.updateLastUsed(account.id);
+          await CloudAccountRepo.setAccountStatus(account.id, 'active', null);
         } catch (error) {
           logger.error(`Monitor: Failed to update ${account.email}`, error);
-          // Could mark status as 'error' or 'rate_limited' if 429
+          const classified = classifyAccountStatusFromError(error);
+          if (classified) {
+            await CloudAccountRepo.setAccountStatus(account.id, classified.status, classified.reason);
+            if (classified.status === 'rate_limited' && hasReusableCachedQuota(account)) {
+              logger.warn(
+                `Monitor: Quota request rate-limited for ${account.email}, keeping cached quota as fallback.`,
+              );
+            }
+          }
         }
       }
 

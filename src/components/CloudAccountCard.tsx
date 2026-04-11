@@ -37,6 +37,7 @@ import {
 import { useState } from 'react';
 import { useSetAccountProxy } from '@/hooks/useCloudAccounts';
 import { isValidProxyUrl } from '@/utils/url';
+import { getValidationBlockedStatusLabel } from '@/components/accountValidationStatus';
 
 type ModelQuotaEntry = [string, CloudQuotaModelInfo];
 
@@ -336,6 +337,12 @@ export function CloudAccountCard({
     }
   };
 
+  const validationBlockedStatusLabel = getValidationBlockedStatusLabel(
+    account.status,
+    account.status_reason,
+    t,
+  );
+
   return (
     <Card
       className={`group bg-card hover:border-primary/40 flex h-full flex-col overflow-hidden border transition-all duration-200 hover:shadow-sm ${isSelected ? 'ring-primary border-primary/50 ring-2' : ''}`}
@@ -474,7 +481,11 @@ export function CloudAccountCard({
         <div className="mb-3 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Badge
-              variant={account.status === 'rate_limited' ? 'destructive' : 'outline'}
+              variant={
+                account.status === 'rate_limited' || account.status === 'expired'
+                  ? 'destructive'
+                  : 'outline'
+              }
               className="text-xs"
             >
               {account.provider.toUpperCase()}
@@ -484,9 +495,9 @@ export function CloudAccountCard({
                 {t('cloud.card.active')}
               </Badge>
             )}
-            {account.status === 'rate_limited' && (
+            {validationBlockedStatusLabel && (
               <span className="text-destructive text-xs font-medium">
-                {t('cloud.card.rateLimited')}
+                {validationBlockedStatusLabel}
               </span>
             )}
           </div>
@@ -636,6 +647,12 @@ export function CompactCloudAccountCard({
     }
   };
 
+  const validationBlockedStatusLabel = getValidationBlockedStatusLabel(
+    account.status,
+    account.status_reason,
+    t,
+  );
+
   return (
     <div className="group bg-card hover:border-primary/40 flex items-center gap-3 rounded-lg border px-3 py-2 transition-all duration-200">
       {account.avatar_url ? (
@@ -656,7 +673,11 @@ export function CompactCloudAccountCard({
             {account.name || t('cloud.card.unknown')}
           </span>
           <Badge
-            variant={account.status === 'rate_limited' ? 'destructive' : 'outline'}
+            variant={
+              account.status === 'rate_limited' || account.status === 'expired'
+                ? 'destructive'
+                : 'outline'
+            }
             className="shrink-0 text-[10px]"
           >
             {account.provider.toUpperCase()}
@@ -673,6 +694,9 @@ export function CompactCloudAccountCard({
 
         <div className="text-muted-foreground flex items-center gap-3 text-xs">
           <span className="truncate">{account.email}</span>
+          {validationBlockedStatusLabel && (
+            <span className="text-destructive shrink-0 font-medium">{validationBlockedStatusLabel}</span>
+          )}
 
           {shouldShowAiCredits && aiCredits && (
             <span className="shrink-0 text-amber-500">
